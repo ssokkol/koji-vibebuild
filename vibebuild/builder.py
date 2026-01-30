@@ -3,6 +3,7 @@ Koji builder - orchestrates package builds with dependency resolution.
 """
 
 import logging
+import os
 import subprocess
 import time
 from dataclasses import dataclass, field
@@ -73,6 +74,7 @@ class KojiBuilder:
         scratch: bool = False,
         nowait: bool = False,
         download_dir: Optional[str] = None,
+        no_ssl_verify: bool = False,
     ):
         self.koji_server = koji_server
         self.koji_web_url = koji_web_url
@@ -82,12 +84,14 @@ class KojiBuilder:
         self.build_tag = build_tag
         self.scratch = scratch
         self.nowait = nowait
+        self.no_ssl_verify = no_ssl_verify
         
         self.koji_client = KojiClient(
             server=koji_server,
             web_url=koji_web_url,
             cert=cert,
-            serverca=serverca
+            serverca=serverca,
+            no_ssl_verify=no_ssl_verify
         )
         
         self.resolver = DependencyResolver(
@@ -95,9 +99,19 @@ class KojiBuilder:
             koji_tag=build_tag
         )
         
-        self.fetcher = SRPMFetcher(download_dir=download_dir)
+        self.fetcher = SRPMFetcher(download_dir=download_dir, no_ssl_verify=no_ssl_verify)
         
         self._tasks: list[BuildTask] = []
+    
+    def _get_env(self) -> Optional[dict]:
+        """Get environment variables for subprocess, with SSL verification disabled if needed."""
+        if self.no_ssl_verify:
+            env = os.environ.copy()
+            env['PYTHONHTTPSVERIFY'] = '0'
+            env['REQUESTS_CA_BUNDLE'] = ''
+            env['CURL_CA_BUNDLE'] = ''
+            return env
+        return None
     
     def _run_koji(self, *args, timeout: int = 60) -> subprocess.CompletedProcess:
         """Run koji command with configured options."""
@@ -117,7 +131,8 @@ class KojiBuilder:
                 cmd,
                 capture_output=True,
                 text=True,
-                timeout=timeout
+                timeout=timeout,
+                env=self._get_env()
             )
         except subprocess.TimeoutExpired:
             raise KojiConnectionError(f"Command timed out: {' '.join(args)}")

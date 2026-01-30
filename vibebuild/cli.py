@@ -119,6 +119,12 @@ Examples:
         help='Build tag for dependency checking'
     )
     
+    koji_group.add_argument(
+        '--no-ssl-verify',
+        action='store_true',
+        help='Disable SSL certificate verification (insecure)'
+    )
+    
     build_group = parser.add_argument_group('Build options')
     
     build_group.add_argument(
@@ -225,7 +231,7 @@ def print_build_result(result: BuildResult) -> None:
     print("=" * 60)
 
 
-def cmd_analyze(srpm_path: str, server: str, build_tag: str, cert: Optional[str], serverca: Optional[str]) -> int:
+def cmd_analyze(srpm_path: str, server: str, build_tag: str, cert: Optional[str], serverca: Optional[str], no_ssl_verify: bool = False) -> int:
     """Analyze SRPM dependencies."""
     print(f"Analyzing: {srpm_path}")
     
@@ -242,7 +248,7 @@ def cmd_analyze(srpm_path: str, server: str, build_tag: str, cert: Optional[str]
         
         print("\nChecking availability in Koji...")
         
-        koji_client = KojiClient(server=server, cert=cert, serverca=serverca)
+        koji_client = KojiClient(server=server, cert=cert, serverca=serverca, no_ssl_verify=no_ssl_verify)
         resolver = DependencyResolver(koji_client=koji_client, koji_tag=build_tag)
         
         missing = resolver.find_missing_deps([r.name for r in package_info.build_requires])
@@ -261,12 +267,12 @@ def cmd_analyze(srpm_path: str, server: str, build_tag: str, cert: Optional[str]
         return 1
 
 
-def cmd_download(package_name: str, download_dir: Optional[str]) -> int:
+def cmd_download(package_name: str, download_dir: Optional[str], no_ssl_verify: bool = False) -> int:
     """Download SRPM from Fedora."""
     print(f"Downloading SRPM for: {package_name}")
     
     try:
-        fetcher = SRPMFetcher(download_dir=download_dir)
+        fetcher = SRPMFetcher(download_dir=download_dir, no_ssl_verify=no_ssl_verify)
         srpm_path = fetcher.download_srpm(package_name)
         
         print(f"✓ Downloaded: {srpm_path}")
@@ -290,6 +296,7 @@ def cmd_build(
     no_deps: bool,
     download_dir: Optional[str],
     dry_run: bool,
+    no_ssl_verify: bool = False,
 ) -> int:
     """Build package with dependency resolution."""
     srpm = Path(srpm_path)
@@ -307,6 +314,7 @@ def cmd_build(
         scratch=scratch,
         nowait=nowait,
         download_dir=download_dir,
+        no_ssl_verify=no_ssl_verify,
     )
     
     if dry_run:
@@ -371,20 +379,23 @@ def main(args: Optional[list[str]] = None) -> int:
     setup_logging(opts.verbose, opts.quiet)
     
     if opts.analyze_only:
-        if not opts.srpm:
+        srpm_path = opts.srpm or opts.target
+        if not srpm_path:
             parser.error("--analyze-only requires SRPM path")
         return cmd_analyze(
-            opts.srpm,
+            srpm_path,
             opts.server,
             opts.build_tag,
             opts.cert,
-            opts.serverca
+            opts.serverca,
+            opts.no_ssl_verify
         )
     
     if opts.download_only:
-        if not opts.srpm:
+        package_name = opts.srpm or opts.target
+        if not package_name:
             parser.error("--download-only requires package name")
-        return cmd_download(opts.srpm, opts.download_dir)
+        return cmd_download(package_name, opts.download_dir, opts.no_ssl_verify)
     
     if not opts.target or not opts.srpm:
         parser.error("TARGET and SRPM are required for building")
@@ -402,6 +413,7 @@ def main(args: Optional[list[str]] = None) -> int:
         no_deps=opts.no_deps,
         download_dir=opts.download_dir,
         dry_run=opts.dry_run,
+        no_ssl_verify=opts.no_ssl_verify,
     )
 
 

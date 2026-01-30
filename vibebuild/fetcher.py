@@ -56,13 +56,25 @@ class SRPMFetcher:
         self,
         download_dir: Optional[str] = None,
         sources: Optional[list[SRPMSource]] = None,
-        fedora_release: str = "rawhide"
+        fedora_release: str = "rawhide",
+        no_ssl_verify: bool = False
     ):
         self.download_dir = Path(download_dir) if download_dir else Path(tempfile.gettempdir()) / "vibebuild"
         self.download_dir.mkdir(parents=True, exist_ok=True)
         self.sources = sorted(sources or self.DEFAULT_SOURCES, key=lambda s: s.priority)
         self.fedora_release = fedora_release
+        self.no_ssl_verify = no_ssl_verify
         self._cache: dict[str, str] = {}
+    
+    def _get_env(self) -> Optional[dict]:
+        """Get environment variables for subprocess, with SSL verification disabled if needed."""
+        if self.no_ssl_verify:
+            env = os.environ.copy()
+            env['PYTHONHTTPSVERIFY'] = '0'
+            env['REQUESTS_CA_BUNDLE'] = ''
+            env['CURL_CA_BUNDLE'] = ''
+            return env
+        return None
     
     def download_srpm(self, package_name: str, version: Optional[str] = None) -> str:
         """
@@ -114,6 +126,7 @@ class SRPMFetcher:
     ) -> str:
         """Download SRPM using koji CLI."""
         cmd = ["koji", f"--server={source.koji_server}"]
+        env = self._get_env()
         
         if version:
             cmd.extend(["download-build", "--type=src", f"{package_name}-{version}"])
@@ -122,7 +135,8 @@ class SRPMFetcher:
                 ["koji", f"--server={source.koji_server}",
                  "latest-build", "--type=src", f"f{self.fedora_release.replace('rawhide', '42')}", package_name],
                 capture_output=True,
-                text=True
+                text=True,
+                env=env
             )
             
             if result.returncode != 0 or not result.stdout.strip():
@@ -130,7 +144,8 @@ class SRPMFetcher:
                     ["koji", f"--server={source.koji_server}",
                      "latest-build", "--type=src", "rawhide", package_name],
                     capture_output=True,
-                    text=True
+                    text=True,
+                    env=env
                 )
             
             if result.returncode != 0 or not result.stdout.strip():
@@ -153,7 +168,8 @@ class SRPMFetcher:
             cwd=str(download_path),
             capture_output=True,
             text=True,
-            timeout=300
+            timeout=300,
+            env=env
         )
         
         if result.returncode != 0:
@@ -177,7 +193,7 @@ class SRPMFetcher:
         
         spec_url = f"{source.base_url}/{package_name}/raw/{self.fedora_release}/f/{package_name}.spec"
         
-        response = requests.get(spec_url, timeout=30)
+        response = requests.get(spec_url, timeout=30, verify=not self.no_ssl_verify)
         if response.status_code != 200:
             raise SRPMNotFoundError(f"Spec not found at {spec_url}")
         
@@ -236,14 +252,18 @@ class SRPMFetcher:
     def _download_file(self, url: str, dest: Path) -> None:
         """Download a file from URL."""
         if not HAS_REQUESTS:
+            cmd = ["curl", "-L", "-o", str(dest), url]
+            if self.no_ssl_verify:
+                cmd.insert(1, "-k")
             subprocess.run(
-                ["curl", "-L", "-o", str(dest), url],
+                cmd,
                 check=True,
-                timeout=300
+                timeout=300,
+                env=self._get_env()
             )
             return
         
-        response = requests.get(url, stream=True, timeout=300)
+        response = requests.get(url, stream=True, timeout=300, verify=not self.no_ssl_verify)
         response.raise_for_status()
         
         with open(dest, 'wb') as f:
@@ -265,7 +285,8 @@ class SRPMFetcher:
                 ["koji", "--server=https://koji.fedoraproject.org/kojihub",
                  "search", "package", f"*{name}*"],
                 capture_output=True,
-                text=True
+                text=True,
+                env=self._get_env()
             )
             if result.returncode == 0:
                 return [line.strip() for line in result.stdout.strip().split('\n') if line]
@@ -274,7 +295,7 @@ class SRPMFetcher:
         url = f"https://src.fedoraproject.org/api/0/projects?pattern=*{name}*&namespace=rpms"
         
         try:
-            response = requests.get(url, timeout=30)
+            response = requests.get(url, timeout=30, verify=not self.no_ssl_verify)
             if response.status_code == 200:
                 data = response.json()
                 return [p['name'] for p in data.get('projects', [])]
@@ -289,7 +310,8 @@ class SRPMFetcher:
             ["koji", "--server=https://koji.fedoraproject.org/kojihub",
              "list-builds", "--package", package_name, "--quiet"],
             capture_output=True,
-            text=True
+            text=True,
+            env=self._get_env()
         )
         
         versions = []

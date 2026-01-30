@@ -2,6 +2,7 @@
 Dependency resolver - checks dependencies in Koji and builds DAG.
 """
 
+import os
 import subprocess
 from collections import defaultdict
 from dataclasses import dataclass, field
@@ -35,11 +36,23 @@ class KojiClient:
         web_url: str = "https://koji.fedoraproject.org/koji",
         cert: Optional[str] = None,
         serverca: Optional[str] = None,
+        no_ssl_verify: bool = False,
     ):
         self.server = server
         self.web_url = web_url
         self.cert = cert
         self.serverca = serverca
+        self.no_ssl_verify = no_ssl_verify
+    
+    def _get_env(self) -> Optional[dict]:
+        """Get environment variables for subprocess, with SSL verification disabled if needed."""
+        if self.no_ssl_verify:
+            env = os.environ.copy()
+            env['PYTHONHTTPSVERIFY'] = '0'
+            env['REQUESTS_CA_BUNDLE'] = ''
+            env['CURL_CA_BUNDLE'] = ''
+            return env
+        return None
     
     def _run_koji_command(self, *args) -> subprocess.CompletedProcess:
         """Run koji command with configured options."""
@@ -57,7 +70,8 @@ class KojiClient:
                 cmd,
                 capture_output=True,
                 text=True,
-                timeout=60
+                timeout=60,
+                env=self._get_env()
             )
             return result
         except subprocess.TimeoutExpired:
