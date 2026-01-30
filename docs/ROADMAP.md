@@ -1,92 +1,92 @@
 # VibeBuild Roadmap
 
-План разработки проекта VibeBuild.
+Development plan for the VibeBuild project.
 
-## Текущая версия: 0.1.0
+## Current Version: 0.1.0
 
 ---
 
-## Фаза 1: Инфраструктура ✅
+## Phase 1: Infrastructure ✅
 
-**Статус:** Завершена
+**Status:** Completed
 
-### Задачи
+### Tasks
 
-- [x] Ansible playbook для развертывания Koji на Fedora VPS
+- [x] Ansible playbook for deploying Koji on Fedora VPS
   - [x] PostgreSQL setup
-  - [x] Koji Hub конфигурация
-  - [x] Koji Builder конфигурация
+  - [x] Koji Hub configuration
+  - [x] Koji Builder configuration
   - [x] Koji Web UI
-  - [x] SSL сертификаты
-  - [x] Инициализация тегов и таргетов
-  - [x] Внешние репозитории
+  - [x] SSL certificates
+  - [x] Tag and target initialization
+  - [x] External repositories
 
-### Результат
+### Result
 
-Полностью автоматизированное развертывание Koji сервера одной командой:
+Fully automated Koji server deployment with a single command:
 ```bash
 ansible-playbook -i inventory/hosts.ini playbook.yml
 ```
 
 ---
 
-## Фаза 2: Core модули ✅
+## Phase 2: Core Modules ✅
 
-**Статус:** Завершена
+**Status:** Completed
 
-### Задачи
+### Tasks
 
-- [x] `analyzer.py` — парсинг SRPM и spec файлов
-  - [x] Извлечение BuildRequires
-  - [x] Парсинг метаданных пакета
-  - [x] Поддержка RPM макросов
+- [x] `analyzer.py` — SRPM and spec file parsing
+  - [x] BuildRequires extraction
+  - [x] Package metadata parsing
+  - [x] RPM macro support
 
-- [x] `resolver.py` — разрешение зависимостей
-  - [x] Интеграция с Koji API
-  - [x] Построение графа зависимостей (DAG)
-  - [x] Топологическая сортировка
-  - [x] Обнаружение циклических зависимостей
+- [x] `resolver.py` — dependency resolution
+  - [x] Koji API integration
+  - [x] Dependency graph construction (DAG)
+  - [x] Topological sorting
+  - [x] Circular dependency detection
 
-- [x] `fetcher.py` — загрузка SRPM
-  - [x] Загрузка из Fedora Koji
-  - [x] Загрузка из src.fedoraproject.org
-  - [x] Кэширование загруженных файлов
+- [x] `fetcher.py` — SRPM downloading
+  - [x] Downloading from Fedora Koji
+  - [x] Downloading from src.fedoraproject.org
+  - [x] Downloaded file caching
 
-- [x] `builder.py` — оркестрация сборок
-  - [x] Отправка сборок в Koji
-  - [x] Ожидание регенерации репозитория
-  - [x] Цепочки сборок
+- [x] `builder.py` — build orchestration
+  - [x] Submitting builds to Koji
+  - [x] Waiting for repository regeneration
+  - [x] Build chains
 
 ---
 
-## Фаза 3: CLI и интеграция ✅
+## Phase 3: CLI and Integration ✅
 
-**Статус:** Завершена
+**Status:** Completed
 
-### Задачи
+### Tasks
 
-- [x] CLI интерфейс (`cli.py`)
-  - [x] Основная команда `vibebuild TARGET SRPM`
-  - [x] Режим анализа `--analyze-only`
-  - [x] Режим загрузки `--download-only`
+- [x] CLI interface (`cli.py`)
+  - [x] Main command `vibebuild TARGET SRPM`
+  - [x] Analysis mode `--analyze-only`
+  - [x] Download mode `--download-only`
   - [x] Dry run `--dry-run`
-  - [x] Опции Koji сервера
+  - [x] Koji server options
 
 - [x] Package setup
-  - [x] `setup.py` и `pyproject.toml`
-  - [x] Entry point для CLI
-  - [x] Зависимости
+  - [x] `setup.py` and `pyproject.toml`
+  - [x] Entry point for CLI
+  - [x] Dependencies
 
 ---
 
-## Фаза 4: Документация ✅
+## Phase 4: Documentation ✅
 
-**Статус:** Завершена
+**Status:** Completed
 
-### Задачи
+### Tasks
 
-- [x] README.md с Quick Start
-- [x] CONTRIBUTING.md для разработчиков
+- [x] README.md with Quick Start
+- [x] CONTRIBUTING.md for developers
 - [x] docs/ARCHITECTURE.md
 - [x] docs/API.md
 - [x] docs/ROADMAP.md
@@ -95,115 +95,115 @@ ansible-playbook -i inventory/hosts.ini playbook.yml
 
 ---
 
-## Фаза 5: Тестирование 🔄
+## Phase 5: Testing 🔄
 
-**Статус:** В планах
+**Status:** Planned
 
-### Задачи
+### Tasks
 
-- [ ] Unit тесты для всех модулей
+- [ ] Unit tests for all modules
   - [ ] test_analyzer.py
   - [ ] test_resolver.py
   - [ ] test_fetcher.py
   - [ ] test_builder.py
 
-- [ ] Integration тесты
-  - [ ] Mock Koji сервер
-  - [ ] End-to-end тесты
+- [ ] Integration tests
+  - [ ] Mock Koji server
+  - [ ] End-to-end tests
 
 - [ ] CI/CD
   - [ ] GitHub Actions workflow
-  - [ ] Автоматические тесты на PR
+  - [ ] Automatic tests on PR
   - [ ] Coverage reporting
 
-### Метрики
+### Metrics
 
-- Целевой coverage: >80%
-- Все публичные функции покрыты тестами
+- Target coverage: >80%
+- All public functions covered by tests
 
 ---
 
-## Фаза 6: Улучшения 📋
+## Phase 6: Improvements 📋
 
-**Статус:** Планируется
+**Status:** Planned
 
-### 6.1 Параллельная сборка
+### 6.1 Parallel Building
 
-- [ ] Параллельная сборка пакетов на одном уровне DAG
-- [ ] Конфигурация max_parallel_builds
-- [ ] Прогресс-бар для множественных сборок
+- [ ] Parallel building of packages at the same DAG level
+- [ ] max_parallel_builds configuration
+- [ ] Progress bar for multiple builds
 
-### 6.2 Расширенное кэширование
+### 6.2 Extended Caching
 
-- [ ] Persistent кэш зависимостей
-- [ ] Кэш результатов анализа spec файлов
-- [ ] Инвалидация кэша по времени
+- [ ] Persistent dependency cache
+- [ ] Spec file analysis result cache
+- [ ] Time-based cache invalidation
 
-### 6.3 Улучшенная обработка ошибок
+### 6.3 Improved Error Handling
 
-- [ ] Retry с exponential backoff
-- [ ] Продолжение после ошибки (--continue-on-error)
-- [ ] Детальные отчёты об ошибках
+- [ ] Retry with exponential backoff
+- [ ] Continue after error (--continue-on-error)
+- [ ] Detailed error reports
 
-### 6.4 Дополнительные источники SRPM
+### 6.4 Additional SRPM Sources
 
 - [ ] CentOS Stream
 - [ ] EPEL
-- [ ] Пользовательские Git репозитории
-- [ ] Локальные SRPM директории
+- [ ] Custom Git repositories
+- [ ] Local SRPM directories
 
 ---
 
-## Фаза 7: Web UI 📋
+## Phase 7: Web UI 📋
 
-**Статус:** Планируется (v0.3.0)
+**Status:** Planned (v0.3.0)
 
-### Задачи
+### Tasks
 
-- [ ] REST API для VibeBuild
+- [ ] REST API for VibeBuild
 - [ ] Web dashboard
-  - [ ] Статус текущих сборок
-  - [ ] История сборок
-  - [ ] Визуализация графа зависимостей
-- [ ] Интеграция с Koji Web
+  - [ ] Current build status
+  - [ ] Build history
+  - [ ] Dependency graph visualization
+- [ ] Integration with Koji Web
 
 ---
 
-## Будущие планы 🔮
+## Future Plans 🔮
 
 ### v1.0.0
 
-- [ ] Стабильный API
-- [ ] Полное покрытие тестами
-- [ ] Production-ready документация
-- [ ] PyPI публикация
+- [ ] Stable API
+- [ ] Full test coverage
+- [ ] Production-ready documentation
+- [ ] PyPI publication
 
-### После v1.0.0
+### After v1.0.0
 
-- [ ] Плагинная система
-- [ ] Поддержка других build систем (OBS, Copr)
-- [ ] Интеграция с CI/CD системами (GitLab CI, Jenkins)
-- [ ] Kubernetes operator для масштабирования билдеров
+- [ ] Plugin system
+- [ ] Support for other build systems (OBS, Copr)
+- [ ] Integration with CI/CD systems (GitLab CI, Jenkins)
+- [ ] Kubernetes operator for builder scaling
 
 ---
 
 ## Changelog
 
-### v0.1.0 (текущая)
+### v0.1.0 (current)
 
-**Добавлено:**
-- Базовая функциональность VibeBuild
-- Ansible playbook для Koji
-- CLI интерфейс
-- Документация
+**Added:**
+- Basic VibeBuild functionality
+- Ansible playbook for Koji
+- CLI interface
+- Documentation
 
 ---
 
-## Как внести вклад
+## How to Contribute
 
-См. [CONTRIBUTING.md](../CONTRIBUTING.md) для информации о том, как помочь проекту.
+See [CONTRIBUTING.md](../CONTRIBUTING.md) for information on how to help the project.
 
-Приоритетные области для контрибьюторов:
-1. Unit тесты
-2. Документация примеров использования
-3. Тестирование на различных дистрибутивах
+Priority areas for contributors:
+1. Unit tests
+2. Usage example documentation
+3. Testing on various distributions

@@ -1,101 +1,101 @@
 # Deployment Guide
 
-Руководство по развертыванию Koji и VibeBuild.
+Guide for deploying Koji and VibeBuild.
 
-## Содержание
+## Table of Contents
 
-- [Требования](#требования)
-- [Быстрый старт](#быстрый-старт)
-- [Подробная установка](#подробная-установка)
-- [Конфигурация](#конфигурация)
+- [Requirements](#requirements)
+- [Quick Start](#quick-start)
+- [Detailed Installation](#detailed-installation)
+- [Configuration](#configuration)
 - [Troubleshooting](#troubleshooting)
 
 ---
 
-## Требования
+## Requirements
 
-### Сервер (VPS)
+### Server (VPS)
 
-- **ОС:** Fedora 40+ (рекомендуется)
-- **RAM:** минимум 4GB, рекомендуется 8GB+
-- **Диск:** 50GB+ (для хранения SRPM/RPM)
+- **OS:** Fedora 40+ (recommended)
+- **RAM:** minimum 4GB, recommended 8GB+
+- **Disk:** 50GB+ (for SRPM/RPM storage)
 - **CPU:** 2+ cores
-- **Сеть:** публичный IP или доступный из сети hostname
+- **Network:** public IP or network-accessible hostname
 
-### Клиент
+### Client
 
 - Python 3.9+
 - `koji` CLI
 - `rpm-build`, `rpm2cpio`
-- Сетевой доступ к Koji серверу
+- Network access to Koji server
 
 ---
 
-## Быстрый старт
+## Quick Start
 
-### 1. Подготовка сервера
+### 1. Server Preparation
 
 ```bash
-# На сервере (Fedora)
+# On server (Fedora)
 sudo dnf update -y
 sudo dnf install -y ansible-core python3-pip
 ```
 
-### 2. Настройка Ansible
+### 2. Ansible Setup
 
 ```bash
-# На локальной машине
+# On local machine
 git clone https://github.com/vibebuild/vibebuild.git
 cd vibebuild/ansible
 
-# Установить Ansible коллекции
+# Install Ansible collections
 ansible-galaxy install -r requirements.yml
 ```
 
-### 3. Конфигурация
+### 3. Configuration
 
 ```bash
-# Настроить inventory
+# Configure inventory
 cp inventory/hosts.ini.example inventory/hosts.ini
 vim inventory/hosts.ini
 
-# Указать IP сервера
+# Specify server IP
 # [koji_hub]
 # koji-server ansible_host=YOUR_VPS_IP ansible_user=root
 ```
 
 ```bash
-# Настроить переменные
+# Configure variables
 vim group_vars/all.yml
 
-# Изменить:
-# - koji_hub_fqdn: ваш домен
-# - postgresql_password: безопасный пароль
-# - koji_admin_user: имя администратора
+# Change:
+# - koji_hub_fqdn: your domain
+# - postgresql_password: secure password
+# - koji_admin_user: admin username
 ```
 
-### 4. Запуск playbook
+### 4. Run Playbook
 
 ```bash
 ansible-playbook -i inventory/hosts.ini playbook.yml
 ```
 
-### 5. Проверка
+### 5. Verify
 
 ```bash
-# Открыть в браузере
+# Open in browser
 https://YOUR_VPS_IP/koji
 ```
 
 ---
 
-## Подробная установка
+## Detailed Installation
 
-### Установка Koji вручную
+### Manual Koji Installation
 
-Если вы предпочитаете ручную установку:
+If you prefer manual installation:
 
-#### 1. Установка пакетов
+#### 1. Install Packages
 
 ```bash
 sudo dnf install -y \
@@ -112,40 +112,40 @@ sudo dnf install -y \
 #### 2. PostgreSQL
 
 ```bash
-# Инициализация
+# Initialize
 sudo postgresql-setup --initdb
 
-# Настройка pg_hba.conf
+# Configure pg_hba.conf
 sudo vim /var/lib/pgsql/data/pg_hba.conf
-# Добавить:
+# Add:
 # host    koji     koji     127.0.0.1/32    md5
 
-# Запуск
+# Start
 sudo systemctl enable --now postgresql
 
-# Создание БД
+# Create database
 sudo -u postgres psql
 CREATE USER koji WITH PASSWORD 'your_password';
 CREATE DATABASE koji OWNER koji;
 \q
 
-# Импорт схемы
+# Import schema
 sudo -u postgres psql koji < /usr/share/doc/koji*/docs/schema.sql
 ```
 
-#### 3. SSL сертификаты
+#### 3. SSL Certificates
 
 ```bash
-# Создать директории
+# Create directories
 sudo mkdir -p /etc/pki/koji/{certs,private}
 
-# Генерация CA
+# Generate CA
 openssl req -new -x509 -days 3650 -nodes \
     -subj "/CN=Koji CA" \
     -keyout /etc/pki/koji/private/koji_ca.key \
     -out /etc/pki/koji/koji_ca_cert.crt
 
-# Генерация сертификата сервера
+# Generate server certificate
 openssl genrsa -out /etc/pki/koji/certs/server.key 2048
 openssl req -new \
     -subj "/CN=koji.example.com" \
@@ -158,7 +158,7 @@ openssl x509 -req -days 3650 \
     -CAcreateserial \
     -out /etc/pki/koji/certs/server.crt
 
-# Генерация клиентского сертификата (для admin)
+# Generate client certificate (for admin)
 openssl genrsa -out /etc/pki/koji/certs/admin.key 2048
 openssl req -new \
     -subj "/CN=kojiadmin" \
@@ -170,12 +170,12 @@ openssl x509 -req -days 3650 \
     -CAkey /etc/pki/koji/private/koji_ca.key \
     -out /etc/pki/koji/certs/admin.crt
 
-# Создать PEM bundle
+# Create PEM bundle
 cat /etc/pki/koji/certs/admin.crt /etc/pki/koji/certs/admin.key > ~/.koji/client.pem
 cp /etc/pki/koji/koji_ca_cert.crt ~/.koji/serverca.crt
 ```
 
-#### 4. Конфигурация Koji Hub
+#### 4. Koji Hub Configuration
 
 ```bash
 sudo vim /etc/koji-hub/hub.conf
@@ -192,34 +192,34 @@ LoginCreatesUser = On
 KojiWebURL = https://koji.example.com/koji
 ```
 
-#### 5. Настройка Apache
+#### 5. Apache Configuration
 
-См. шаблоны в `ansible/roles/koji-hub/templates/`.
+See templates in `ansible/roles/koji-hub/templates/`.
 
-#### 6. Инициализация
+#### 6. Initialization
 
 ```bash
-# Добавить админа
+# Add admin
 koji add-user kojiadmin
 koji grant-permission admin kojiadmin
 
-# Создать теги
+# Create tags
 koji add-tag fedora-dest
 koji add-tag fedora-build --parent fedora-dest --arches x86_64
 
-# Создать таргет
+# Create target
 koji add-target fedora-target fedora-build fedora-dest
 
-# Добавить внешние репозитории
+# Add external repositories
 koji add-external-repo -t fedora-build fedora-base \
     "https://mirrors.fedoraproject.org/mirrorlist?repo=fedora-\$releasever&arch=\$basearch"
 ```
 
 ---
 
-## Конфигурация
+## Configuration
 
-### Клиентская конфигурация
+### Client Configuration
 
 ```bash
 # ~/.koji/config
@@ -231,19 +231,19 @@ cert = ~/.koji/client.pem
 serverca = ~/.koji/serverca.crt
 ```
 
-### VibeBuild конфигурация
+### VibeBuild Configuration
 
-VibeBuild можно использовать с опциями командной строки или переменными окружения:
+VibeBuild can be used with command-line options or environment variables:
 
 ```bash
-# Через CLI
+# Via CLI
 vibebuild \
     --server https://koji.example.com/kojihub \
     --cert ~/.koji/client.pem \
     --serverca ~/.koji/serverca.crt \
     fedora-target my-package.src.rpm
 
-# Через переменные окружения
+# Via environment variables
 export KOJI_SERVER=https://koji.example.com/kojihub
 export KOJI_CERT=~/.koji/client.pem
 export KOJI_SERVERCA=~/.koji/serverca.crt
@@ -254,68 +254,68 @@ vibebuild fedora-target my-package.src.rpm
 
 ## Troubleshooting
 
-### Проблемы с подключением
+### Connection Issues
 
-**Симптом:** `Connection refused` или `SSL certificate verify failed`
+**Symptom:** `Connection refused` or `SSL certificate verify failed`
 
-**Решение:**
+**Solution:**
 ```bash
-# Проверить, что Apache запущен
+# Check that Apache is running
 sudo systemctl status httpd
 
-# Проверить firewall
+# Check firewall
 sudo firewall-cmd --list-ports
 sudo firewall-cmd --add-port=443/tcp --permanent
 sudo firewall-cmd --reload
 
-# Проверить сертификаты
+# Check certificates
 openssl s_client -connect koji.example.com:443
 ```
 
-### Ошибки базы данных
+### Database Errors
 
-**Симптом:** `Database connection failed`
+**Symptom:** `Database connection failed`
 
-**Решение:**
+**Solution:**
 ```bash
-# Проверить PostgreSQL
+# Check PostgreSQL
 sudo systemctl status postgresql
 
-# Проверить подключение
+# Check connection
 psql -h 127.0.0.1 -U koji -d koji
 
-# Проверить pg_hba.conf
+# Check pg_hba.conf
 sudo cat /var/lib/pgsql/data/pg_hba.conf
 ```
 
-### Ошибки сборки
+### Build Errors
 
-**Симптом:** `Build failed: createrepo error`
+**Symptom:** `Build failed: createrepo error`
 
-**Решение:**
+**Solution:**
 ```bash
-# Регенерировать репозиторий
+# Regenerate repository
 koji regen-repo fedora-build
 
-# Проверить права на /mnt/koji
+# Check permissions on /mnt/koji
 sudo chown -R apache:apache /mnt/koji
 ```
 
-### Builder не подключается
+### Builder Not Connecting
 
-**Симптом:** Builder показывает `offline`
+**Symptom:** Builder shows `offline`
 
-**Решение:**
+**Solution:**
 ```bash
-# Проверить kojid
+# Check kojid
 sudo systemctl status kojid
 sudo journalctl -u kojid -f
 
-# Проверить сертификат builder'а
+# Check builder certificate
 ls -la /etc/pki/koji/kojibuilder.pem
 ```
 
-### Логи
+### Logs
 
 ```bash
 # Koji Hub
@@ -330,41 +330,41 @@ sudo tail -f /var/lib/pgsql/data/log/postgresql-*.log
 
 ---
 
-## Мониторинг
+## Monitoring
 
-### Проверка состояния
+### Status Check
 
 ```bash
-# Статус хостов
+# Host status
 koji list-hosts
 
-# Активные задачи
+# Active tasks
 koji list-tasks
 
-# Статус репозитория
+# Repository status
 koji list-tags
 ```
 
-### Метрики
+### Metrics
 
-Рекомендуется настроить мониторинг для:
-- Дисковое пространство `/mnt/koji`
-- Очередь задач Koji
-- Статус builder'ов
-- Время отклика Hub
+It's recommended to set up monitoring for:
+- Disk space on `/mnt/koji`
+- Koji task queue
+- Builder status
+- Hub response time
 
 ---
 
-## Обновление
+## Upgrading
 
-### Обновление Koji
+### Upgrading Koji
 
 ```bash
 sudo dnf update koji-hub koji-builder koji-web
 sudo systemctl restart httpd kojid
 ```
 
-### Обновление VibeBuild
+### Upgrading VibeBuild
 
 ```bash
 pip install --upgrade vibebuild

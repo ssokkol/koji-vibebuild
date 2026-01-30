@@ -1,92 +1,92 @@
 # Testing Guide
 
-Руководство по тестированию VibeBuild.
+Guide for testing VibeBuild.
 
-## Содержание
+## Table of Contents
 
-- [Запуск тестов](#запуск-тестов)
-- [Структура тестов](#структура-тестов)
-- [Написание тестов](#написание-тестов)
+- [Running Tests](#running-tests)
+- [Test Structure](#test-structure)
+- [Writing Tests](#writing-tests)
 - [Mocking](#mocking)
 - [Coverage](#coverage)
 
 ---
 
-## Запуск тестов
+## Running Tests
 
-### Установка зависимостей
+### Installing Dependencies
 
 ```bash
 pip install -e ".[dev]"
 ```
 
-### Запуск всех тестов
+### Running All Tests
 
 ```bash
 pytest
 ```
 
-### Запуск с verbose output
+### Running with Verbose Output
 
 ```bash
 pytest -v
 ```
 
-### Запуск конкретного файла
+### Running Specific File
 
 ```bash
 pytest tests/test_analyzer.py
 ```
 
-### Запуск конкретного теста
+### Running Specific Test
 
 ```bash
 pytest tests/test_analyzer.py::test_get_build_requires
 ```
 
-### Запуск по маркеру
+### Running by Marker
 
 ```bash
-# Только unit тесты
+# Only unit tests
 pytest -m unit
 
-# Только integration тесты
+# Only integration tests
 pytest -m integration
 ```
 
 ---
 
-## Структура тестов
+## Test Structure
 
 ```
 tests/
-├── conftest.py              # Общие fixtures
-├── fixtures/                # Тестовые данные
+├── conftest.py              # Shared fixtures
+├── fixtures/                # Test data
 │   ├── test-package.spec
 │   └── test-package.src.rpm
-├── test_analyzer.py         # Тесты analyzer
-├── test_resolver.py         # Тесты resolver
-├── test_fetcher.py          # Тесты fetcher
-├── test_builder.py          # Тесты builder
-├── test_cli.py              # Тесты CLI
-└── integration/             # Integration тесты
+├── test_analyzer.py         # Analyzer tests
+├── test_resolver.py         # Resolver tests
+├── test_fetcher.py          # Fetcher tests
+├── test_builder.py          # Builder tests
+├── test_cli.py              # CLI tests
+└── integration/             # Integration tests
     └── test_e2e.py
 ```
 
 ---
 
-## Написание тестов
+## Writing Tests
 
-### Стиль
+### Style
 
-Используйте AAA (Arrange-Act-Assert) паттерн:
+Use AAA (Arrange-Act-Assert) pattern:
 
 ```python
 def test_get_build_requires_extracts_packages():
     srpm_path = "tests/fixtures/test-package.src.rpm"
-    
+
     result = get_build_requires(srpm_path)
-    
+
     assert isinstance(result, list)
     assert "python3-devel" in result
 ```
@@ -100,7 +100,7 @@ def test_<what>_<condition>_<expected>():
     pass
 ```
 
-### Маркеры
+### Markers
 
 ```python
 import pytest
@@ -142,21 +142,21 @@ def sample_srpm(fixtures_dir):
 
 @pytest.fixture
 def mock_koji_client(mocker):
-    """Mock KojiClient для тестов без реального Koji."""
+    """Mock KojiClient for tests without real Koji."""
     client = mocker.Mock()
     client.list_packages.return_value = ["python3", "gcc", "make"]
     client.package_exists.return_value = True
     return client
 ```
 
-### Использование fixtures
+### Using Fixtures
 
 ```python
 def test_analyzer_with_fixture(sample_spec):
     analyzer = SpecAnalyzer()
-    
+
     result = analyzer.analyze_spec(str(sample_spec))
-    
+
     assert result.name == "test-package"
 ```
 
@@ -171,10 +171,10 @@ def test_koji_build_command(mocker):
     mock_run = mocker.patch("subprocess.run")
     mock_run.return_value.returncode = 0
     mock_run.return_value.stdout = "Created task: 12345"
-    
+
     builder = KojiBuilder()
     task = builder.build_package("test.src.rpm")
-    
+
     assert task.task_id == 12345
     mock_run.assert_called_once()
 ```
@@ -184,25 +184,25 @@ def test_koji_build_command(mocker):
 ```python
 def test_download_srpm_from_koji(mocker):
     mocker.patch("subprocess.run").return_value.returncode = 0
-    
+
     fetcher = SRPMFetcher(download_dir="/tmp/test")
-    
+
     # ... test logic
 ```
 
-### Mock файловой системы
+### Mock filesystem
 
 ```python
 def test_analyze_spec_file_not_found(tmp_path):
     analyzer = SpecAnalyzer()
-    
+
     with pytest.raises(FileNotFoundError):
         analyzer.analyze_spec(str(tmp_path / "nonexistent.spec"))
 ```
 
 ---
 
-## Примеры тестов
+## Test Examples
 
 ### test_analyzer.py
 
@@ -215,36 +215,36 @@ from vibebuild.exceptions import InvalidSRPMError, SpecParseError
 class TestSpecAnalyzer:
     def test_analyze_spec_extracts_name(self, sample_spec):
         analyzer = SpecAnalyzer()
-        
+
         result = analyzer.analyze_spec(str(sample_spec))
-        
+
         assert result.name == "test-package"
-    
+
     def test_analyze_spec_extracts_version(self, sample_spec):
         analyzer = SpecAnalyzer()
-        
+
         result = analyzer.analyze_spec(str(sample_spec))
-        
+
         assert result.version == "1.0"
-    
+
     def test_analyze_spec_extracts_build_requires(self, sample_spec):
         analyzer = SpecAnalyzer()
-        
+
         result = analyzer.analyze_spec(str(sample_spec))
-        
+
         assert len(result.build_requires) > 0
-    
+
     def test_analyze_spec_raises_on_missing_file(self):
         analyzer = SpecAnalyzer()
-        
+
         with pytest.raises(FileNotFoundError):
             analyzer.analyze_spec("/nonexistent/path.spec")
-    
+
     def test_analyze_spec_raises_on_invalid_spec(self, tmp_path):
         invalid_spec = tmp_path / "invalid.spec"
         invalid_spec.write_text("invalid content")
         analyzer = SpecAnalyzer()
-        
+
         with pytest.raises(SpecParseError):
             analyzer.analyze_spec(str(invalid_spec))
 
@@ -252,13 +252,13 @@ class TestSpecAnalyzer:
 class TestGetBuildRequires:
     def test_returns_list(self, sample_srpm):
         result = get_build_requires(str(sample_srpm))
-        
+
         assert isinstance(result, list)
-    
+
     def test_raises_on_invalid_srpm(self, tmp_path):
         invalid = tmp_path / "not-an-srpm.txt"
         invalid.write_text("not an srpm")
-        
+
         with pytest.raises(InvalidSRPMError):
             get_build_requires(str(invalid))
 ```
@@ -275,19 +275,19 @@ class TestDependencyResolver:
     def test_find_missing_deps_returns_missing(self, mock_koji_client):
         mock_koji_client.package_exists.side_effect = lambda p, t: p != "missing-pkg"
         resolver = DependencyResolver(koji_client=mock_koji_client)
-        
+
         result = resolver.find_missing_deps(["existing-pkg", "missing-pkg"])
-        
+
         assert "missing-pkg" in result
         assert "existing-pkg" not in result
-    
+
     def test_topological_sort_detects_cycle(self, mock_koji_client):
         resolver = DependencyResolver(koji_client=mock_koji_client)
         resolver._dependency_graph = {
             "a": Mock(dependencies=["b"], is_available=False),
             "b": Mock(dependencies=["a"], is_available=False),
         }
-        
+
         with pytest.raises(CircularDependencyError):
             resolver.topological_sort()
 ```
@@ -296,26 +296,26 @@ class TestDependencyResolver:
 
 ## Coverage
 
-### Запуск с coverage
+### Running with Coverage
 
 ```bash
 pytest --cov=vibebuild --cov-report=term-missing
 ```
 
-### HTML отчёт
+### HTML Report
 
 ```bash
 pytest --cov=vibebuild --cov-report=html
 open htmlcov/index.html
 ```
 
-### Минимальный coverage
+### Minimum Coverage
 
 ```bash
 pytest --cov=vibebuild --cov-fail-under=80
 ```
 
-### Конфигурация в pyproject.toml
+### Configuration in pyproject.toml
 
 ```toml
 [tool.coverage.run]
@@ -349,38 +349,38 @@ jobs:
     strategy:
       matrix:
         python-version: ['3.9', '3.10', '3.11', '3.12']
-    
+
     steps:
     - uses: actions/checkout@v4
-    
+
     - name: Set up Python
       uses: actions/setup-python@v5
       with:
         python-version: ${{ matrix.python-version }}
-    
+
     - name: Install dependencies
       run: |
         pip install -e ".[dev]"
-    
+
     - name: Run tests
       run: |
         pytest --cov=vibebuild --cov-report=xml
-    
+
     - name: Upload coverage
       uses: codecov/codecov-action@v3
 ```
 
 ---
 
-## Integration тесты
+## Integration Tests
 
-### Требования
+### Requirements
 
-Integration тесты требуют:
-- Доступ к тестовому Koji серверу
-- Тестовые SRPM файлы
+Integration tests require:
+- Access to test Koji server
+- Test SRPM files
 
-### Пример
+### Example
 
 ```python
 # tests/integration/test_e2e.py
@@ -393,29 +393,29 @@ class TestEndToEnd:
     @pytest.fixture
     def koji_server(self):
         return "https://test-koji.example.com/kojihub"
-    
+
     def test_full_build_workflow(self, koji_server, sample_srpm):
         from vibebuild.builder import KojiBuilder
-        
+
         builder = KojiBuilder(
             koji_server=koji_server,
-            scratch=True,  # Scratch build для тестов
+            scratch=True,  # Scratch build for tests
         )
-        
+
         result = builder.build_with_deps(str(sample_srpm))
-        
+
         assert result.success
 ```
 
-### Запуск integration тестов
+### Running Integration Tests
 
 ```bash
-# Только unit тесты (по умолчанию)
+# Only unit tests (default)
 pytest -m "not integration"
 
-# Включая integration тесты
+# Including integration tests
 pytest -m "integration"
 
-# Все тесты
+# All tests
 pytest
 ```

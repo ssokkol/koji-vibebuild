@@ -5,25 +5,25 @@
 [![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-VibeBuild расширяет функциональность Koji, добавляя автоматическое разрешение зависимостей. Когда вы собираете пакет, VibeBuild автоматически находит недостающие BuildRequires, скачивает их SRPM из Fedora и собирает всю цепочку зависимостей в правильном порядке.
+VibeBuild extends Koji functionality by adding automatic dependency resolution. When you build a package, VibeBuild automatically finds missing BuildRequires, downloads their SRPMs from Fedora, and builds the entire dependency chain in the correct order.
 
-## Возможности
+## Features
 
-- 🔍 **Автоматический анализ зависимостей** — парсинг SRPM/spec файлов для извлечения BuildRequires
-- 📦 **Загрузка SRPM** — автоматическая загрузка недостающих пакетов из Fedora Koji
-- 🔗 **Построение DAG** — определение порядка сборки с учётом зависимостей
-- 🏗️ **Оркестрация сборок** — последовательная сборка с ожиданием регенерации репозитория
-- 🖥️ **CLI интерфейс** — удобная командная строка
+- **Automatic dependency analysis** — parsing SRPM/spec files to extract BuildRequires
+- **SRPM downloading** — automatic download of missing packages from Fedora Koji
+- **DAG construction** — determining build order based on dependencies
+- **Build orchestration** — sequential building with repository regeneration waiting
+- **CLI interface** — convenient command line tool
 
-## Быстрый старт
+## Quick Start
 
-### Установка
+### Installation
 
 ```bash
 pip install vibebuild
 ```
 
-Или из исходников:
+Or from source:
 
 ```bash
 git clone https://github.com/vibebuild/vibebuild.git
@@ -31,26 +31,26 @@ cd vibebuild
 pip install -e .
 ```
 
-### Использование
+### Usage
 
 ```bash
-# Сборка пакета с автоматическим разрешением зависимостей
+# Build package with automatic dependency resolution
 vibebuild fedora-target my-package-1.0-1.fc40.src.rpm
 
-# Scratch сборка (не тегируется)
+# Scratch build (not tagged)
 vibebuild --scratch fedora-target my-package.src.rpm
 
-# Анализ зависимостей без сборки
+# Analyze dependencies without building
 vibebuild --analyze-only my-package.src.rpm
 
-# Загрузка SRPM из Fedora
+# Download SRPM from Fedora
 vibebuild --download-only python-requests
 
-# Dry run — показать что будет собрано
+# Dry run — show what would be built
 vibebuild --dry-run fedora-target my-package.src.rpm
 ```
 
-### Использование с собственным Koji сервером
+### Using with your own Koji server
 
 ```bash
 vibebuild \
@@ -62,24 +62,24 @@ vibebuild \
   my-target my-package.src.rpm
 ```
 
-## Развертывание Koji
+## Koji Deployment
 
-В репозитории есть Ansible playbook для автоматического развертывания Koji на Fedora:
+The repository includes an Ansible playbook for automatic Koji deployment on Fedora:
 
 ```bash
 cd ansible
 
-# Настройте inventory
+# Configure inventory
 vim inventory/hosts.ini
 
-# Настройте переменные
+# Configure variables
 vim group_vars/all.yml
 
-# Запустите playbook
+# Run playbook
 ansible-playbook -i inventory/hosts.ini playbook.yml
 ```
 
-## Как это работает
+## How It Works
 
 ```
 ┌─────────────────┐
@@ -111,25 +111,25 @@ ansible-playbook -i inventory/hosts.ini playbook.yml
 └─────────────────┘     └─────────────────┘
 ```
 
-1. **Analyzer** — извлекает BuildRequires из SRPM/spec файла
-2. **Resolver** — проверяет какие зависимости отсутствуют в Koji и строит граф зависимостей
-3. **Fetcher** — скачивает SRPM для недостающих пакетов из Fedora
-4. **Builder** — собирает пакеты в правильном порядке, ожидая регенерацию репозитория между сборками
+1. **Analyzer** — extracts BuildRequires from SRPM/spec file
+2. **Resolver** — checks which dependencies are missing in Koji and builds dependency graph
+3. **Fetcher** — downloads SRPMs for missing packages from Fedora
+4. **Builder** — builds packages in correct order, waiting for repository regeneration between builds
 
-## Требования
+## Requirements
 
 - Python 3.9+
-- `koji` CLI (установлен в системе)
-- `rpm-build`, `rpm2cpio` (для работы с SRPM)
-- Доступ к Koji серверу
+- `koji` CLI (installed on system)
+- `rpm-build`, `rpm2cpio` (for working with SRPMs)
+- Access to Koji server
 
-## Документация
+## Documentation
 
-- [ARCHITECTURE.md](docs/ARCHITECTURE.md) — архитектура системы
-- [API.md](docs/API.md) — документация API модулей
-- [DEPLOYMENT.md](docs/DEPLOYMENT.md) — руководство по развертыванию
-- [CONTRIBUTING.md](CONTRIBUTING.md) — как внести вклад
+- [ARCHITECTURE.md](docs/ARCHITECTURE.md) — system architecture
+- [API.md](docs/API.md) — API documentation
+- [DEPLOYMENT.md](docs/DEPLOYMENT.md) — deployment guide
+- [CONTRIBUTING.md](CONTRIBUTING.md) — how to contribute
 
-## Лицензия
+## License
 
-MIT License. См. [LICENSE](LICENSE) для деталей.
+MIT License. See [LICENSE](LICENSE) for details.

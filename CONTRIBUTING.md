@@ -1,91 +1,91 @@
 # Contributing to VibeBuild
 
-Спасибо за интерес к VibeBuild! Этот документ описывает процесс внесения изменений в проект.
+Thank you for your interest in VibeBuild! This document describes the process of contributing to the project.
 
-## Содержание
+## Table of Contents
 
-- [Настройка окружения разработки](#настройка-окружения-разработки)
-- [Структура проекта](#структура-проекта)
+- [Development Environment Setup](#development-environment-setup)
+- [Project Structure](#project-structure)
 - [Code Style](#code-style)
-- [Работа с Git](#работа-с-git)
+- [Working with Git](#working-with-git)
 - [Pull Request](#pull-request)
-- [Тестирование](#тестирование)
-- [Документация](#документация)
+- [Testing](#testing)
+- [Documentation](#documentation)
 
-## Настройка окружения разработки
+## Development Environment Setup
 
-### Требования
+### Requirements
 
 - Python 3.9+
 - Git
-- `koji` CLI (для интеграционных тестов)
-- `rpm-build`, `rpm2cpio` (для работы с SRPM)
+- `koji` CLI (for integration tests)
+- `rpm-build`, `rpm2cpio` (for working with SRPMs)
 
-### Установка
+### Installation
 
-1. Форкните репозиторий и клонируйте его:
+1. Fork the repository and clone it:
 
 ```bash
 git clone https://github.com/YOUR_USERNAME/vibebuild.git
 cd vibebuild
 ```
 
-2. Создайте виртуальное окружение:
+2. Create a virtual environment:
 
 ```bash
 python -m venv .venv
 source .venv/bin/activate  # Linux/macOS
-# или
+# or
 .venv\Scripts\activate     # Windows
 ```
 
-3. Установите зависимости для разработки:
+3. Install development dependencies:
 
 ```bash
 pip install -e ".[dev]"
 ```
 
-4. Установите pre-commit hooks:
+4. Install pre-commit hooks:
 
 ```bash
 pre-commit install
 ```
 
-### Проверка установки
+### Verify Installation
 
 ```bash
-# Запуск тестов
+# Run tests
 pytest
 
-# Проверка code style
+# Check code style
 black --check vibebuild
 isort --check vibebuild
 flake8 vibebuild
 mypy vibebuild
 ```
 
-## Структура проекта
+## Project Structure
 
 ```
 vibebuild/
-├── vibebuild/              # Основной пакет
-│   ├── __init__.py         # Экспорты и версия
-│   ├── analyzer.py         # Парсинг SRPM/spec файлов
-│   ├── resolver.py         # Разрешение зависимостей, DAG
-│   ├── fetcher.py          # Загрузка SRPM из Fedora
-│   ├── builder.py          # Оркестрация сборок Koji
-│   ├── cli.py              # CLI интерфейс
-│   └── exceptions.py       # Пользовательские исключения
-├── ansible/                # Ansible playbook для Koji
+├── vibebuild/              # Main package
+│   ├── __init__.py         # Exports and version
+│   ├── analyzer.py         # SRPM/spec file parsing
+│   ├── resolver.py         # Dependency resolution, DAG
+│   ├── fetcher.py          # SRPM downloading from Fedora
+│   ├── builder.py          # Koji build orchestration
+│   ├── cli.py              # CLI interface
+│   └── exceptions.py       # Custom exceptions
+├── ansible/                # Ansible playbook for Koji
 │   ├── playbook.yml
 │   ├── inventory/
 │   ├── group_vars/
 │   └── roles/
-├── tests/                  # Тесты
+├── tests/                  # Tests
 │   ├── test_analyzer.py
 │   ├── test_resolver.py
 │   └── ...
-├── docs/                   # Документация
+├── docs/                   # Documentation
 │   ├── ARCHITECTURE.md
 │   ├── API.md
 │   └── ...
@@ -98,29 +98,29 @@ vibebuild/
 
 ### Python
 
-Мы используем:
-- **Black** для форматирования кода (line-length: 100)
-- **isort** для сортировки импортов (profile: black)
-- **flake8** для линтинга
-- **mypy** для проверки типов
+We use:
+- **Black** for code formatting (line-length: 100)
+- **isort** for import sorting (profile: black)
+- **flake8** for linting
+- **mypy** for type checking
 
-Конфигурация в `pyproject.toml`.
+Configuration is in `pyproject.toml`.
 
 ```bash
-# Автоформатирование
+# Auto-format
 black vibebuild tests
 isort vibebuild tests
 
-# Проверка
+# Check
 black --check vibebuild tests
 isort --check vibebuild tests
 flake8 vibebuild tests
 mypy vibebuild
 ```
 
-### Типизация
+### Type Hints
 
-Используйте type hints для всех публичных функций:
+Use type hints for all public functions:
 
 ```python
 def get_build_requires(srpm_path: str) -> list[str]:
@@ -130,62 +130,62 @@ def get_build_requires(srpm_path: str) -> list[str]:
 
 ### Docstrings
 
-Используйте Google style docstrings:
+Use Google style docstrings:
 
 ```python
 def build_package(srpm_path: str, wait: bool = True) -> BuildTask:
     """
     Submit a single package build to Koji.
-    
+
     Args:
         srpm_path: Path to SRPM file
         wait: Whether to wait for build to complete
-        
+
     Returns:
         BuildTask with result information
-        
+
     Raises:
         FileNotFoundError: If SRPM doesn't exist
         KojiBuildError: If build fails
     """
 ```
 
-## Работа с Git
+## Working with Git
 
-### Структура веток
+### Branch Structure
 
-- `main` — стабильная версия
-- `develop` — текущая разработка
-- `feature/*` — новые фичи
-- `bugfix/*` — исправления багов
-- `release/*` — подготовка релизов
+- `main` — stable version
+- `develop` — current development
+- `feature/*` — new features
+- `bugfix/*` — bug fixes
+- `release/*` — release preparation
 
-### Создание ветки
+### Creating a Branch
 
 ```bash
-# Новая фича
+# New feature
 git checkout develop
 git pull origin develop
 git checkout -b feature/my-feature
 
-# Исправление бага
+# Bug fix
 git checkout -b bugfix/issue-123
 ```
 
 ### Commit Messages
 
-Формат: `<type>(<scope>): <description>`
+Format: `<type>(<scope>): <description>`
 
-Типы:
-- `feat` — новая функциональность
-- `fix` — исправление бага
-- `docs` — изменения документации
-- `style` — форматирование, без изменения логики
-- `refactor` — рефакторинг без изменения функциональности
-- `test` — добавление/изменение тестов
-- `chore` — обновление зависимостей, конфигов
+Types:
+- `feat` — new functionality
+- `fix` — bug fix
+- `docs` — documentation changes
+- `style` — formatting, no logic changes
+- `refactor` — refactoring without functionality changes
+- `test` — adding/modifying tests
+- `chore` — dependency updates, configs
 
-Примеры:
+Examples:
 
 ```
 feat(resolver): add circular dependency detection
@@ -198,80 +198,80 @@ test(analyzer): add tests for spec parsing
 
 ### Checklist
 
-Перед созданием PR убедитесь:
+Before creating a PR, make sure:
 
-- [ ] Код соответствует code style (black, isort, flake8)
-- [ ] Добавлены/обновлены тесты
-- [ ] Все тесты проходят (`pytest`)
-- [ ] Обновлена документация (если нужно)
-- [ ] Commit messages соответствуют формату
-- [ ] PR имеет понятное описание
+- [ ] Code follows code style (black, isort, flake8)
+- [ ] Tests are added/updated
+- [ ] All tests pass (`pytest`)
+- [ ] Documentation is updated (if needed)
+- [ ] Commit messages follow the format
+- [ ] PR has a clear description
 
-### Процесс
+### Process
 
-1. Запушьте ветку в свой форк
-2. Создайте Pull Request в `develop`
-3. Заполните шаблон PR
-4. Дождитесь code review
-5. Внесите запрошенные изменения
-6. После апрува — squash & merge
+1. Push branch to your fork
+2. Create Pull Request to `develop`
+3. Fill out PR template
+4. Wait for code review
+5. Address requested changes
+6. After approval — squash & merge
 
-### Шаблон PR
+### PR Template
 
 ```markdown
-## Описание
-Краткое описание изменений
+## Description
+Brief description of changes
 
-## Тип изменения
+## Type of Change
 - [ ] Bug fix
 - [ ] New feature
 - [ ] Breaking change
 - [ ] Documentation
 
-## Как тестировал?
-Описание тестирования
+## How was it tested?
+Description of testing
 
 ## Checklist
-- [ ] Тесты проходят
+- [ ] Tests pass
 - [ ] Code style OK
-- [ ] Документация обновлена
+- [ ] Documentation updated
 ```
 
-## Тестирование
+## Testing
 
-### Запуск тестов
+### Running Tests
 
 ```bash
-# Все тесты
+# All tests
 pytest
 
-# С coverage
+# With coverage
 pytest --cov=vibebuild --cov-report=html
 
-# Конкретный файл
+# Specific file
 pytest tests/test_analyzer.py
 
-# Конкретный тест
+# Specific test
 pytest tests/test_analyzer.py::test_parse_spec
 ```
 
-### Структура тестов
+### Test Structure
 
-Используйте AAA pattern (Arrange-Act-Assert):
+Use AAA pattern (Arrange-Act-Assert):
 
 ```python
 def test_get_build_requires_returns_list():
     srpm_path = "fixtures/test-package.src.rpm"
-    
+
     result = get_build_requires(srpm_path)
-    
+
     assert isinstance(result, list)
     assert "python3-devel" in result
 ```
 
 ### Fixtures
 
-Тестовые данные в `tests/fixtures/`:
+Test data in `tests/fixtures/`:
 
 ```
 tests/
@@ -282,26 +282,26 @@ tests/
 └── test_*.py
 ```
 
-## Документация
+## Documentation
 
-### Обновление документации
+### Updating Documentation
 
-При изменении публичного API обновите:
+When changing public API, update:
 
-1. Docstrings в коде
+1. Docstrings in code
 2. `docs/API.md`
-3. `README.md` (если затрагивает usage)
+3. `README.md` (if it affects usage)
 
-### Сборка документации
+### Building Documentation
 
 ```bash
-# Проверка docstrings
+# Check docstrings
 pydocstyle vibebuild
 ```
 
-## Вопросы?
+## Questions?
 
-- Создайте Issue с вопросом
-- Напишите в discussions
+- Create an Issue with your question
+- Write in discussions
 
-Спасибо за ваш вклад! 🎉
+Thank you for your contribution!

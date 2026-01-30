@@ -1,24 +1,24 @@
 # VibeBuild API Reference
 
-## Модули
+## Modules
 
-- [analyzer](#analyzer) — парсинг SRPM и spec файлов
-- [resolver](#resolver) — разрешение зависимостей
-- [fetcher](#fetcher) — загрузка SRPM
-- [builder](#builder) — оркестрация сборок
-- [exceptions](#exceptions) — исключения
+- [analyzer](#analyzer) — SRPM and spec file parsing
+- [resolver](#resolver) — dependency resolution
+- [fetcher](#fetcher) — SRPM downloading
+- [builder](#builder) — build orchestration
+- [exceptions](#exceptions) — exceptions
 
 ---
 
 ## analyzer
 
-Модуль для анализа SRPM и spec файлов.
+Module for analyzing SRPM and spec files.
 
-### Классы
+### Classes
 
 #### `BuildRequirement`
 
-Представляет одну зависимость сборки.
+Represents a single build dependency.
 
 ```python
 @dataclass
@@ -28,12 +28,12 @@ class BuildRequirement:
     operator: Optional[str] = None
 ```
 
-**Атрибуты:**
-- `name` — имя пакета
-- `version` — версия (если указана)
-- `operator` — оператор сравнения (`>=`, `<=`, `>`, `<`, `=`)
+**Attributes:**
+- `name` — package name
+- `version` — version (if specified)
+- `operator` — comparison operator (`>=`, `<=`, `>`, `<`, `=`)
 
-**Пример:**
+**Example:**
 ```python
 req = BuildRequirement(name="python3-devel", version="3.9", operator=">=")
 print(str(req))  # "python3-devel >= 3.9"
@@ -43,7 +43,7 @@ print(str(req))  # "python3-devel >= 3.9"
 
 #### `PackageInfo`
 
-Информация о пакете, извлечённая из spec файла.
+Package information extracted from spec file.
 
 ```python
 @dataclass
@@ -55,44 +55,44 @@ class PackageInfo:
     source_urls: list[str]
 ```
 
-**Атрибуты:**
-- `name` — имя пакета
-- `version` — версия
-- `release` — релиз
-- `build_requires` — список зависимостей сборки
-- `source_urls` — URL исходников
+**Attributes:**
+- `name` — package name
+- `version` — version
+- `release` — release
+- `build_requires` — list of build dependencies
+- `source_urls` — source URLs
 
-**Свойства:**
-- `nvr` — Name-Version-Release строка
+**Properties:**
+- `nvr` — Name-Version-Release string
 
 ---
 
 #### `SpecAnalyzer`
 
-Анализатор spec файлов.
+Spec file analyzer.
 
 ```python
 class SpecAnalyzer:
     def analyze_spec(self, spec_path: str) -> PackageInfo: ...
 ```
 
-**Методы:**
+**Methods:**
 
 ##### `analyze_spec(spec_path: str) -> PackageInfo`
 
-Парсит spec файл и извлекает информацию о пакете.
+Parses spec file and extracts package information.
 
-**Параметры:**
-- `spec_path` — путь к .spec файлу
+**Parameters:**
+- `spec_path` — path to .spec file
 
-**Возвращает:**
-- `PackageInfo` с данными пакета
+**Returns:**
+- `PackageInfo` with package data
 
-**Исключения:**
-- `FileNotFoundError` — файл не найден
-- `SpecParseError` — ошибка парсинга spec
+**Exceptions:**
+- `FileNotFoundError` — file not found
+- `SpecParseError` — spec parsing error
 
-**Пример:**
+**Example:**
 ```python
 analyzer = SpecAnalyzer()
 info = analyzer.analyze_spec("/path/to/package.spec")
@@ -103,23 +103,23 @@ for req in info.build_requires:
 
 ---
 
-### Функции
+### Functions
 
 #### `get_build_requires(srpm_path: str) -> list[str]`
 
-Извлекает список BuildRequires из SRPM файла.
+Extracts BuildRequires list from SRPM file.
 
-**Параметры:**
-- `srpm_path` — путь к .src.rpm файлу
+**Parameters:**
+- `srpm_path` — path to .src.rpm file
 
-**Возвращает:**
-- Список имён пакетов (без версий)
+**Returns:**
+- List of package names (without versions)
 
-**Исключения:**
-- `FileNotFoundError` — SRPM не найден
-- `InvalidSRPMError` — невалидный SRPM
+**Exceptions:**
+- `FileNotFoundError` — SRPM not found
+- `InvalidSRPMError` — invalid SRPM
 
-**Пример:**
+**Example:**
 ```python
 requires = get_build_requires("my-package-1.0-1.fc40.src.rpm")
 print(requires)  # ["python3-devel", "gcc", "make"]
@@ -129,15 +129,15 @@ print(requires)  # ["python3-devel", "gcc", "make"]
 
 #### `get_package_info_from_srpm(srpm_path: str) -> PackageInfo`
 
-Извлекает полную информацию о пакете из SRPM.
+Extracts complete package information from SRPM.
 
-**Параметры:**
-- `srpm_path` — путь к .src.rpm файлу
+**Parameters:**
+- `srpm_path` — path to .src.rpm file
 
-**Возвращает:**
-- `PackageInfo` с данными пакета
+**Returns:**
+- `PackageInfo` with package data
 
-**Пример:**
+**Example:**
 ```python
 info = get_package_info_from_srpm("my-package-1.0-1.fc40.src.rpm")
 print(f"NVR: {info.nvr}")
@@ -147,13 +147,13 @@ print(f"NVR: {info.nvr}")
 
 ## resolver
 
-Модуль для разрешения зависимостей и построения графа сборки.
+Module for dependency resolution and build graph construction.
 
-### Классы
+### Classes
 
 #### `DependencyNode`
 
-Узел в графе зависимостей.
+Node in the dependency graph.
 
 ```python
 @dataclass
@@ -170,7 +170,7 @@ class DependencyNode:
 
 #### `KojiClient`
 
-Клиент для взаимодействия с Koji.
+Client for interacting with Koji.
 
 ```python
 class KojiClient:
@@ -183,29 +183,29 @@ class KojiClient:
     ): ...
 ```
 
-**Методы:**
+**Methods:**
 
 ##### `list_packages(tag: str) -> list[str]`
 
-Список всех пакетов в теге.
+List of all packages in tag.
 
 ##### `list_tagged_builds(tag: str) -> dict[str, str]`
 
-Список всех сборок в теге. Возвращает `{package_name: nvr}`.
+List of all builds in tag. Returns `{package_name: nvr}`.
 
 ##### `package_exists(package: str, tag: str) -> bool`
 
-Проверяет существование пакета в теге.
+Checks if package exists in tag.
 
 ##### `search_package(pattern: str) -> list[str]`
 
-Поиск пакетов по паттерну.
+Search packages by pattern.
 
 ---
 
 #### `DependencyResolver`
 
-Разрешает зависимости и строит граф сборки.
+Resolves dependencies and builds build graph.
 
 ```python
 class DependencyResolver:
@@ -216,20 +216,20 @@ class DependencyResolver:
     ): ...
 ```
 
-**Методы:**
+**Methods:**
 
 ##### `find_missing_deps(deps: list[str | BuildRequirement], check_provides: bool = True) -> list[str]`
 
-Находит зависимости, отсутствующие в Koji.
+Finds dependencies missing in Koji.
 
-**Параметры:**
-- `deps` — список зависимостей
-- `check_provides` — проверять ли provides
+**Parameters:**
+- `deps` — list of dependencies
+- `check_provides` — whether to check provides
 
-**Возвращает:**
-- Список отсутствующих пакетов
+**Returns:**
+- List of missing packages
 
-**Пример:**
+**Example:**
 ```python
 resolver = DependencyResolver(koji_tag="fedora-build")
 missing = resolver.find_missing_deps(["python3-devel", "my-custom-lib"])
@@ -240,35 +240,35 @@ print(f"Missing: {missing}")
 
 ##### `build_dependency_graph(root_package: str, srpm_path: str, srpm_resolver: Optional[callable] = None) -> dict[str, DependencyNode]`
 
-Строит полный граф зависимостей.
+Builds complete dependency graph.
 
-**Параметры:**
-- `root_package` — имя корневого пакета
-- `srpm_path` — путь к SRPM корневого пакета
-- `srpm_resolver` — функция для получения SRPM по имени пакета
+**Parameters:**
+- `root_package` — root package name
+- `srpm_path` — path to root package SRPM
+- `srpm_resolver` — function to get SRPM by package name
 
-**Возвращает:**
-- Словарь `{package_name: DependencyNode}`
+**Returns:**
+- Dictionary `{package_name: DependencyNode}`
 
 ---
 
 ##### `topological_sort() -> list[str]`
 
-Возвращает пакеты в порядке сборки (зависимости первыми).
+Returns packages in build order (dependencies first).
 
-**Исключения:**
-- `CircularDependencyError` — обнаружена циклическая зависимость
+**Exceptions:**
+- `CircularDependencyError` — circular dependency detected
 
 ---
 
 ##### `get_build_chain() -> list[list[str]]`
 
-Группирует пакеты по уровням (для параллельной сборки).
+Groups packages by levels (for parallel building).
 
-**Возвращает:**
-- Список списков. Пакеты в одном списке могут собираться параллельно.
+**Returns:**
+- List of lists. Packages in the same list can be built in parallel.
 
-**Пример:**
+**Example:**
 ```python
 chain = resolver.get_build_chain()
 for level, packages in enumerate(chain):
@@ -282,13 +282,13 @@ for level, packages in enumerate(chain):
 
 ## fetcher
 
-Модуль для загрузки SRPM из внешних источников.
+Module for downloading SRPMs from external sources.
 
-### Классы
+### Classes
 
 #### `SRPMSource`
 
-Конфигурация источника SRPM.
+SRPM source configuration.
 
 ```python
 @dataclass
@@ -303,7 +303,7 @@ class SRPMSource:
 
 #### `SRPMFetcher`
 
-Загрузчик SRPM.
+SRPM downloader.
 
 ```python
 class SRPMFetcher:
@@ -315,23 +315,23 @@ class SRPMFetcher:
     ): ...
 ```
 
-**Методы:**
+**Methods:**
 
 ##### `download_srpm(package_name: str, version: Optional[str] = None) -> str`
 
-Загружает SRPM для пакета.
+Downloads SRPM for package.
 
-**Параметры:**
-- `package_name` — имя пакета
-- `version` — версия (опционально)
+**Parameters:**
+- `package_name` — package name
+- `version` — version (optional)
 
-**Возвращает:**
-- Путь к загруженному SRPM
+**Returns:**
+- Path to downloaded SRPM
 
-**Исключения:**
-- `SRPMNotFoundError` — SRPM не найден ни в одном источнике
+**Exceptions:**
+- `SRPMNotFoundError` — SRPM not found in any source
 
-**Пример:**
+**Example:**
 ```python
 fetcher = SRPMFetcher(download_dir="/tmp/srpms")
 srpm_path = fetcher.download_srpm("python-requests")
@@ -342,37 +342,37 @@ print(f"Downloaded: {srpm_path}")
 
 ##### `search_fedora_src(name: str) -> list[str]`
 
-Поиск пакетов в Fedora.
+Search packages in Fedora.
 
-**Параметры:**
-- `name` — имя или паттерн
+**Parameters:**
+- `name` — name or pattern
 
-**Возвращает:**
-- Список имён пакетов
+**Returns:**
+- List of package names
 
 ---
 
 ##### `get_package_versions(package_name: str) -> list[str]`
 
-Получает доступные версии пакета.
+Gets available package versions.
 
 ---
 
 ##### `clear_cache() -> None`
 
-Очищает кэш загруженных SRPM.
+Clears downloaded SRPM cache.
 
 ##### `cleanup() -> None`
 
-Удаляет все загруженные файлы.
+Removes all downloaded files.
 
 ---
 
 ## builder
 
-Модуль для оркестрации сборок в Koji.
+Module for build orchestration in Koji.
 
-### Перечисления
+### Enumerations
 
 #### `BuildStatus`
 
@@ -385,11 +385,11 @@ class BuildStatus(Enum):
     CANCELED = "canceled"
 ```
 
-### Классы
+### Classes
 
 #### `BuildTask`
 
-Информация о задаче сборки.
+Build task information.
 
 ```python
 @dataclass
@@ -407,7 +407,7 @@ class BuildTask:
 
 #### `BuildResult`
 
-Результат операции сборки.
+Build operation result.
 
 ```python
 @dataclass
@@ -423,7 +423,7 @@ class BuildResult:
 
 #### `KojiBuilder`
 
-Оркестратор сборок.
+Build orchestrator.
 
 ```python
 class KojiBuilder:
@@ -441,36 +441,36 @@ class KojiBuilder:
     ): ...
 ```
 
-**Методы:**
+**Methods:**
 
 ##### `build_package(srpm_path: str, wait: bool = True) -> BuildTask`
 
-Отправляет пакет на сборку.
+Submits package for building.
 
-**Параметры:**
-- `srpm_path` — путь к SRPM
-- `wait` — ждать завершения
+**Parameters:**
+- `srpm_path` — path to SRPM
+- `wait` — wait for completion
 
-**Возвращает:**
-- `BuildTask` с информацией о сборке
+**Returns:**
+- `BuildTask` with build information
 
-**Исключения:**
-- `FileNotFoundError` — SRPM не найден
-- `KojiBuildError` — ошибка сборки
+**Exceptions:**
+- `FileNotFoundError` — SRPM not found
+- `KojiBuildError` — build error
 
 ---
 
 ##### `build_with_deps(srpm_path: str) -> BuildResult`
 
-**Главная функция VibeBuild.** Собирает пакет с автоматическим разрешением зависимостей.
+**Main VibeBuild function.** Builds package with automatic dependency resolution.
 
-**Параметры:**
-- `srpm_path` — путь к SRPM
+**Parameters:**
+- `srpm_path` — path to SRPM
 
-**Возвращает:**
-- `BuildResult` с полной информацией
+**Returns:**
+- `BuildResult` with complete information
 
-**Пример:**
+**Example:**
 ```python
 builder = KojiBuilder(
     koji_server="https://koji.example.com/kojihub",
@@ -489,52 +489,52 @@ else:
 
 ##### `wait_for_repo(tag: Optional[str] = None, timeout: int = 1800) -> bool`
 
-Ожидает регенерации репозитория.
+Waits for repository regeneration.
 
-**Параметры:**
-- `tag` — тег (по умолчанию build_tag)
-- `timeout` — таймаут в секундах
+**Parameters:**
+- `tag` — tag (defaults to build_tag)
+- `timeout` — timeout in seconds
 
-**Возвращает:**
-- `True` если репозиторий обновлён
+**Returns:**
+- `True` if repository is updated
 
 ---
 
 ##### `build_chain(packages: list[tuple[str, str]]) -> BuildResult`
 
-Собирает несколько пакетов по порядку.
+Builds multiple packages in order.
 
-**Параметры:**
-- `packages` — список `(package_name, srpm_path)`
+**Parameters:**
+- `packages` — list of `(package_name, srpm_path)`
 
 ---
 
 ##### `get_build_status(task_id: int) -> BuildStatus`
 
-Получает статус задачи сборки.
+Gets build task status.
 
 ##### `cancel_build(task_id: int) -> bool`
 
-Отменяет сборку.
+Cancels build.
 
 ---
 
 ## exceptions
 
-### Иерархия исключений
+### Exception Hierarchy
 
 ```python
-VibeBuildError                    # Базовое исключение
-├── InvalidSRPMError              # Невалидный SRPM
-├── SpecParseError                # Ошибка парсинга spec
-├── DependencyResolutionError     # Ошибка разрешения зависимостей
-│   └── CircularDependencyError   # Циклическая зависимость
-├── SRPMNotFoundError             # SRPM не найден
-├── KojiBuildError                # Ошибка сборки
-└── KojiConnectionError           # Ошибка подключения к Koji
+VibeBuildError                    # Base exception
+├── InvalidSRPMError              # Invalid SRPM
+├── SpecParseError                # Spec parsing error
+├── DependencyResolutionError     # Dependency resolution error
+│   └── CircularDependencyError   # Circular dependency
+├── SRPMNotFoundError             # SRPM not found
+├── KojiBuildError                # Build error
+└── KojiConnectionError           # Koji connection error
 ```
 
-### Использование
+### Usage
 
 ```python
 from vibebuild.exceptions import (
