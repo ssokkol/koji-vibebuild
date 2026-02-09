@@ -121,6 +121,20 @@ Examples:
 
     build_group.add_argument("--download-dir", metavar="DIR", help="Directory for downloaded SRPMs")
 
+    build_group.add_argument(
+        "--no-name-resolution",
+        action="store_true",
+        help="Disable package name normalization (macros, virtual provides)",
+    )
+
+    build_group.add_argument(
+        "--no-ml", action="store_true", help="Disable ML-based package name resolution"
+    )
+
+    build_group.add_argument(
+        "--ml-model", metavar="PATH", help="Path to ML model file (default: built-in)"
+    )
+
     mode_group = parser.add_argument_group("Mode options")
 
     mode_group.add_argument(
@@ -266,6 +280,9 @@ def cmd_build(
     download_dir: Optional[str],
     dry_run: bool,
     no_ssl_verify: bool = False,
+    no_name_resolution: bool = False,
+    no_ml: bool = False,
+    ml_model_path: Optional[str] = None,
 ) -> int:
     """Build package with dependency resolution."""
     srpm = Path(srpm_path)
@@ -284,6 +301,9 @@ def cmd_build(
         nowait=nowait,
         download_dir=download_dir,
         no_ssl_verify=no_ssl_verify,
+        no_name_resolution=no_name_resolution,
+        no_ml=no_ml,
+        ml_model_path=ml_model_path,
     )
 
     if dry_run:
@@ -377,6 +397,9 @@ def main(args: Optional[list[str]] = None) -> int:
         download_dir=opts.download_dir,
         dry_run=opts.dry_run,
         no_ssl_verify=opts.no_ssl_verify,
+        no_name_resolution=getattr(opts, "no_name_resolution", False),
+        no_ml=getattr(opts, "no_ml", False),
+        ml_model_path=getattr(opts, "ml_model", None),
     )
 
 

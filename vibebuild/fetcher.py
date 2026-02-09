@@ -54,6 +54,7 @@ class SRPMFetcher:
         sources: Optional[list[SRPMSource]] = None,
         fedora_release: str = "rawhide",
         no_ssl_verify: bool = False,
+        name_resolver=None,
     ):
         self.download_dir = (
             Path(download_dir) if download_dir else Path(tempfile.gettempdir()) / "vibebuild"
@@ -62,6 +63,7 @@ class SRPMFetcher:
         self.sources = sorted(sources or self.DEFAULT_SOURCES, key=lambda s: s.priority)
         self.fedora_release = fedora_release
         self.no_ssl_verify = no_ssl_verify
+        self.name_resolver = name_resolver
         self._cache: dict[str, str] = {}
 
     def _get_env(self) -> Optional[dict]:
@@ -79,6 +81,7 @@ class SRPMFetcher:
         Download SRPM for a package.
 
         Tries each configured source until SRPM is found.
+        If a name_resolver is configured, tries multiple SRPM name variants.
 
         Args:
             package_name: Name of the package
@@ -90,29 +93,41 @@ class SRPMFetcher:
         Raises:
             SRPMNotFoundError: If SRPM cannot be found in any source
         """
-        cache_key = f"{package_name}-{version or 'latest'}"
-        if cache_key in self._cache:
-            cached_path = self._cache[cache_key]
-            if Path(cached_path).exists():
-                return cached_path
+        # Get SRPM name variants to try
+        names_to_try = [package_name]
+        if self.name_resolver:
+            srpm_names = self.name_resolver.resolve_srpm_name(package_name)
+            names_to_try = srpm_names + [package_name]
+            # Deduplicate while preserving order
+            seen: set[str] = set()
+            names_to_try = [n for n in names_to_try if not (n in seen or seen.add(n))]
 
-        errors = []
+        for name in names_to_try:
+            cache_key = f"{name}-{version or 'latest'}"
+            if cache_key in self._cache:
+                cached_path = self._cache[cache_key]
+                if Path(cached_path).exists():
+                    return cached_path
 
-        for source in self.sources:
-            try:
-                if source.koji_server:
-                    srpm_path = self._download_from_koji(package_name, version, source)
-                else:
-                    srpm_path = self._download_from_src(package_name, version, source)
+            errors = []
 
-                self._cache[cache_key] = srpm_path
-                return srpm_path
+            for source in self.sources:
+                try:
+                    if source.koji_server:
+                        srpm_path = self._download_from_koji(name, version, source)
+                    else:
+                        srpm_path = self._download_from_src(name, version, source)
 
-            except Exception as e:
-                errors.append(f"{source.name}: {str(e)}")
-                continue
+                    self._cache[cache_key] = srpm_path
+                    return srpm_path
 
-        raise SRPMNotFoundError(f"Could not find SRPM for {package_name}: {'; '.join(errors)}")
+                except Exception as e:
+                    errors.append(f"{source.name}: {str(e)}")
+                    continue
+
+        raise SRPMNotFoundError(
+            f"Could not find SRPM for {package_name} (tried: {names_to_try})"
+        )
 
     def _download_from_koji(
         self, package_name: str, version: Optional[str], source: SRPMSource

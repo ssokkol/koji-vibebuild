@@ -56,7 +56,9 @@ class SpecAnalyzer:
     MACRO_PATTERN = re.compile(r"%\{([^}]+)\}")
 
     def __init__(self):
-        self._macros: dict[str, str] = {}
+        from vibebuild.name_resolver import SYSTEM_MACROS
+
+        self._macros: dict[str, str] = dict(SYSTEM_MACROS)
 
     def analyze_spec(self, spec_path: str) -> PackageInfo:
         """
@@ -184,8 +186,11 @@ class SpecAnalyzer:
                     version = parts[i + 2].strip()
                     i += 2
 
-            if name and not name.startswith("%"):
-                name = name.replace("(", "").replace(")", "")
+            if name:
+                # Try to expand any macros
+                name = self._expand_macros(name)
+                # Don't strip parentheses - virtual provides like python3dist(requests)
+                # are valid and will be resolved by PackageNameResolver later
                 if name:
                     requirements.append(
                         BuildRequirement(name=name, version=version, operator=operator)

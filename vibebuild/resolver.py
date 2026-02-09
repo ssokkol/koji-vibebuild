@@ -129,9 +129,15 @@ class DependencyResolver:
     builds a DAG of dependencies that need to be built.
     """
 
-    def __init__(self, koji_client: Optional[KojiClient] = None, koji_tag: str = "fedora-build"):
+    def __init__(
+        self,
+        koji_client: Optional[KojiClient] = None,
+        koji_tag: str = "fedora-build",
+        name_resolver=None,
+    ):
         self.koji = koji_client or KojiClient()
         self.koji_tag = koji_tag
+        self.name_resolver = name_resolver
         self._available_packages: Optional[set[str]] = None
         self._dependency_graph: dict[str, DependencyNode] = {}
 
@@ -164,13 +170,25 @@ class DependencyResolver:
         for dep in deps:
             name = dep.name if isinstance(dep, BuildRequirement) else dep
 
-            if name in self.available_packages:
+            # Normalize the name using resolver
+            resolved_name = name
+            if self.name_resolver:
+                resolved_name = self.name_resolver.resolve(name)
+
+            if resolved_name in self.available_packages:
                 continue
 
-            if self.koji.package_exists(name, self.koji_tag):
+            if self.koji.package_exists(resolved_name, self.koji_tag):
                 continue
 
-            missing.append(name)
+            # Also try original name if different from resolved
+            if resolved_name != name:
+                if name in self.available_packages:
+                    continue
+                if self.koji.package_exists(name, self.koji_tag):
+                    continue
+
+            missing.append(resolved_name)
 
         return missing
 
@@ -196,11 +214,18 @@ class DependencyResolver:
                 return
             visited.add(pkg_name)
 
-            if self.koji.package_exists(pkg_name, self.koji_tag):
-                self._dependency_graph[pkg_name] = DependencyNode(name=pkg_name, is_available=True)
+            # Normalize the package name using resolver
+            resolved_name = pkg_name
+            if self.name_resolver:
+                resolved_name = self.name_resolver.resolve(pkg_name)
+
+            if self.koji.package_exists(resolved_name, self.koji_tag):
+                self._dependency_graph[resolved_name] = DependencyNode(
+                    name=resolved_name, is_available=True
+                )
                 return
 
-            node = DependencyNode(name=pkg_name, srpm_path=pkg_srpm)
+            node = DependencyNode(name=resolved_name, srpm_path=pkg_srpm)
 
             if pkg_srpm:
                 try:
@@ -217,7 +242,7 @@ class DependencyResolver:
                 except Exception:
                     node.dependencies = []
 
-            self._dependency_graph[pkg_name] = node
+            self._dependency_graph[resolved_name] = node
 
         resolve_deps(root_package, srpm_path)
         return self._dependency_graph

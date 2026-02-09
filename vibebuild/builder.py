@@ -14,6 +14,7 @@ from typing import Optional
 from vibebuild.analyzer import get_package_info_from_srpm
 from vibebuild.exceptions import KojiBuildError, KojiConnectionError
 from vibebuild.fetcher import SRPMFetcher
+from vibebuild.name_resolver import PackageNameResolver
 from vibebuild.resolver import DependencyResolver, KojiClient
 
 logger = logging.getLogger(__name__)
@@ -78,6 +79,9 @@ class KojiBuilder:
         nowait: bool = False,
         download_dir: Optional[str] = None,
         no_ssl_verify: bool = False,
+        no_name_resolution: bool = False,
+        no_ml: bool = False,
+        ml_model_path: Optional[str] = None,
     ):
         self.koji_server = koji_server
         self.koji_web_url = koji_web_url
@@ -97,9 +101,32 @@ class KojiBuilder:
             no_ssl_verify=no_ssl_verify,
         )
 
-        self.resolver = DependencyResolver(koji_client=self.koji_client, koji_tag=build_tag)
+        # Create name resolver
+        self.name_resolver = None
+        if not no_name_resolution:
+            ml_resolver = None
+            if not no_ml:
+                try:
+                    from vibebuild.ml_resolver import MLPackageResolver
 
-        self.fetcher = SRPMFetcher(download_dir=download_dir, no_ssl_verify=no_ssl_verify)
+                    ml_resolver = MLPackageResolver(model_path=ml_model_path)
+                    if not ml_resolver.is_available():
+                        ml_resolver = None
+                except ImportError:
+                    ml_resolver = None
+            self.name_resolver = PackageNameResolver(ml_resolver=ml_resolver)
+
+        self.resolver = DependencyResolver(
+            koji_client=self.koji_client,
+            koji_tag=build_tag,
+            name_resolver=self.name_resolver,
+        )
+
+        self.fetcher = SRPMFetcher(
+            download_dir=download_dir,
+            no_ssl_verify=no_ssl_verify,
+            name_resolver=self.name_resolver,
+        )
 
         self._tasks: list[BuildTask] = []
 

@@ -8,6 +8,7 @@ __author__ = "VibeBuild Team"
 from vibebuild.analyzer import SpecAnalyzer, get_build_requires
 from vibebuild.builder import KojiBuilder
 from vibebuild.fetcher import SRPMFetcher
+from vibebuild.name_resolver import PackageNameResolver
 from vibebuild.resolver import DependencyResolver
 
 __all__ = [
@@ -16,4 +17,5 @@ __all__ = [
     "DependencyResolver",
     "SRPMFetcher",
     "KojiBuilder",
+    "PackageNameResolver",
 ]

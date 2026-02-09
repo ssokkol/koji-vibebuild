@@ -49,3 +49,9 @@ class KojiConnectionError(VibeBuildError):
     """Raised when connection to Koji hub fails."""
 
     pass
+
+
+class NameResolutionError(VibeBuildError):
+    """Raised when package name cannot be resolved."""
+
+    pass

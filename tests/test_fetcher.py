@@ -156,7 +156,7 @@ class TestSRPMFetcher:
         pkg_dir = tmp_path / "test-pkg"
         pkg_dir.mkdir()
 
-        with pytest.raises(SRPMNotFoundError, match="No SRPM found after download"):
+        with pytest.raises(SRPMNotFoundError, match="Could not find SRPM for test-pkg"):
             fetcher.download_srpm("test-pkg")
 
     def test_search_fedora_src_success(self, tmp_path, mocker):
