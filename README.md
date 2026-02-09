@@ -10,10 +10,12 @@ VibeBuild extends Koji functionality by adding automatic dependency resolution. 
 ## Features
 
 - **Automatic dependency analysis** — parsing SRPM/spec files to extract BuildRequires
-- **SRPM downloading** — automatic download of missing packages from Fedora Koji
+- **Smart package name resolution** — automatic conversion of virtual provides (`python3dist(requests)`, `pkgconfig(glib-2.0)`, `perl(File::Path)`) and RPM macros (`%{python3_pkgversion}`) to real package names
+- **ML-based name resolution** — optional scikit-learn model (TF-IDF + KNN) as fallback when rule-based patterns don't match
+- **SRPM downloading** — automatic download of missing packages from Fedora Koji, with smart SRPM name mapping (e.g. `python3-requests` -> `python-requests`)
 - **DAG construction** — determining build order based on dependencies
 - **Build orchestration** — sequential building with repository regeneration waiting
-- **CLI interface** — convenient command line tool
+- **CLI interface** — convenient command line tool with flexible options
 
 ## Quick Start
 
@@ -23,12 +25,20 @@ VibeBuild extends Koji functionality by adding automatic dependency resolution. 
 pip install vibebuild
 ```
 
+With ML support (optional):
+
+```bash
+pip install vibebuild[ml]
+```
+
 Or from source:
 
 ```bash
 git clone https://github.com/vibebuild/vibebuild.git
 cd vibebuild
 pip install -e .
+# Optional: install ML dependencies
+pip install -e ".[ml]"
 ```
 
 ### Usage
@@ -48,6 +58,15 @@ vibebuild --download-only python-requests
 
 # Dry run — show what would be built
 vibebuild --dry-run fedora-target my-package.src.rpm
+
+# Disable ML-based name resolution (use rules only)
+vibebuild --no-ml fedora-target my-package.src.rpm
+
+# Disable all name resolution (raw dependency names)
+vibebuild --no-name-resolution fedora-target my-package.src.rpm
+
+# Use custom ML model
+vibebuild --ml-model /path/to/model.joblib fedora-target my-package.src.rpm
 ```
 
 ### Using with your own Koji server
@@ -94,6 +113,12 @@ ansible-playbook -i inventory/hosts.ini playbook.yml
          │
          ▼
 ┌─────────────────┐     ┌─────────────────┐
+│ Name Resolver   │────▶│  Expand macros  │
+│ (rules + ML)    │     │  Resolve names  │
+└────────┬────────┘     └─────────────────┘
+         │
+         ▼
+┌─────────────────┐     ┌─────────────────┐
 │    Resolver     │────▶│  Check Koji     │
 │                 │     │  Build DAG      │
 └────────┬────────┘     └─────────────────┘
@@ -111,10 +136,25 @@ ansible-playbook -i inventory/hosts.ini playbook.yml
 └─────────────────┘     └─────────────────┘
 ```
 
-1. **Analyzer** — extracts BuildRequires from SRPM/spec file
-2. **Resolver** — checks which dependencies are missing in Koji and builds dependency graph
-3. **Fetcher** — downloads SRPMs for missing packages from Fedora
-4. **Builder** — builds packages in correct order, waiting for repository regeneration between builds
+1. **Analyzer** — extracts BuildRequires from SRPM/spec file, expands RPM macros
+2. **Name Resolver** — converts virtual provides and macro-based names to real RPM package names (rule-based + optional ML fallback)
+3. **Resolver** — checks which dependencies are missing in Koji and builds dependency graph
+4. **Fetcher** — downloads SRPMs for missing packages from Fedora, with smart SRPM name mapping
+5. **Builder** — builds packages in correct order, waiting for repository regeneration between builds
+
+## ML Model Training (optional)
+
+VibeBuild includes scripts to train a custom ML model for package name resolution:
+
+```bash
+# 1. Collect training data from Fedora repositories
+python scripts/collect_training_data.py --output data/training_data.json
+
+# 2. Train the model
+python scripts/train_model.py --input data/training_data.json --output vibebuild/data/model.joblib
+```
+
+The model uses TF-IDF character n-grams with K-Nearest Neighbors to predict real package names from virtual dependency strings. See [DEPLOYMENT.md](docs/DEPLOYMENT.md) for details.
 
 ## Requirements
 
@@ -123,6 +163,12 @@ ansible-playbook -i inventory/hosts.ini playbook.yml
 - `rpm-build`, `rpm2cpio` (for working with SRPMs)
 - Access to Koji server
 
+**Optional (for ML-based name resolution):**
+- `scikit-learn >= 1.3`
+- `joblib >= 1.3`
+
+Install with: `pip install vibebuild[ml]`
+
 ## Documentation
 
 - [PROJECT_OVERVIEW.md](docs/PROJECT_OVERVIEW.md) — full project description with diagrams
@@ -130,6 +176,7 @@ ansible-playbook -i inventory/hosts.ini playbook.yml
 - [ARCHITECTURE.md](docs/ARCHITECTURE.md) — system architecture
 - [API.md](docs/API.md) — API documentation
 - [DEPLOYMENT.md](docs/DEPLOYMENT.md) — deployment guide
+- [TESTING.md](docs/TESTING.md) — testing guide
 - [CONTRIBUTING.md](CONTRIBUTING.md) — how to contribute
 
 ## License

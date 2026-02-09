@@ -28,6 +28,7 @@ Guide for deploying Koji and VibeBuild.
 - `koji` CLI
 - `rpm-build`, `rpm2cpio`
 - Network access to Koji server
+- **Optional (for ML name resolution):** `scikit-learn >= 1.3`, `joblib >= 1.3`
 
 ---
 
@@ -252,6 +253,77 @@ vibebuild fedora-target my-package.src.rpm
 
 ---
 
+## ML Setup (Optional)
+
+VibeBuild includes an ML-based package name resolver that improves handling of complex virtual RPM dependencies. The ML component is fully optional -- VibeBuild works with rule-based resolution alone.
+
+### 1. Install ML Dependencies
+
+```bash
+pip install vibebuild[ml]
+# or manually:
+pip install scikit-learn>=1.3 joblib>=1.3
+```
+
+### 2. Collect Training Data
+
+The training script downloads and parses Fedora repository metadata to extract provides-to-package mappings:
+
+```bash
+# Collect data from Fedora 40 (default)
+python scripts/collect_training_data.py --output data/training_data.json
+
+# Specify release and architecture
+python scripts/collect_training_data.py \
+    --output data/training_data.json \
+    --release 40 \
+    --arch x86_64
+```
+
+This downloads `primary.xml.gz` from Fedora mirrors and extracts virtual provides (python3dist, pkgconfig, perl, etc.) mapped to real package names. Produces ~50,000-100,000 mappings.
+
+### 3. Train the Model
+
+```bash
+python scripts/train_model.py \
+    --input data/training_data.json \
+    --output vibebuild/data/model.joblib \
+    --test-split 0.1
+```
+
+The script:
+- Trains a TF-IDF + KNN model on the collected data
+- Evaluates on a 10% test split (RPM accuracy, SRPM accuracy)
+- Saves the model to `vibebuild/data/model.joblib` (~5-15 MB)
+
+### 4. Using in Production
+
+The model is automatically loaded when VibeBuild starts (if the model file exists and scikit-learn is installed).
+
+```bash
+# Normal operation (rules + ML fallback)
+vibebuild fedora-target my-package.src.rpm
+
+# Disable ML, use only rule-based resolution
+vibebuild --no-ml fedora-target my-package.src.rpm
+
+# Disable all name resolution
+vibebuild --no-name-resolution fedora-target my-package.src.rpm
+
+# Use a custom model file
+vibebuild --ml-model /path/to/model.joblib fedora-target my-package.src.rpm
+```
+
+### ML Caching
+
+ML predictions are cached to `~/.cache/vibebuild/ml_name_cache.json`. Clear the cache if the model is retrained:
+
+```bash
+rm -f ~/.cache/vibebuild/ml_name_cache.json
+```
+
+---
+
 ## Troubleshooting
 
 ### Connection Issues
@@ -368,4 +440,7 @@ sudo systemctl restart httpd kojid
 
 ```bash
 pip install --upgrade vibebuild
+
+# With ML support
+pip install --upgrade vibebuild[ml]
 ```

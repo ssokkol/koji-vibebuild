@@ -3,6 +3,8 @@
 ## Modules
 
 - [analyzer](#analyzer) — SRPM and spec file parsing
+- [name_resolver](#name_resolver) — package name resolution (rules + ML)
+- [ml_resolver](#ml_resolver) — ML-based package name prediction
 - [resolver](#resolver) — dependency resolution
 - [fetcher](#fetcher) — SRPM downloading
 - [builder](#builder) — build orchestration
@@ -145,6 +147,223 @@ print(f"NVR: {info.nvr}")
 
 ---
 
+## name_resolver
+
+Module for rule-based package name resolution with optional ML fallback.
+
+### Constants
+
+#### `SYSTEM_MACROS`
+
+Dictionary of known RPM system macros for expanding `%{...}` in dependency names.
+
+```python
+SYSTEM_MACROS: dict[str, str] = {
+    "python3_pkgversion": "3",
+    "python3_version": "3.12",
+    "python3_version_nodots": "312",
+    "__python3": "/usr/bin/python3",
+    "_prefix": "/usr",
+    "_bindir": "/usr/bin",
+    "_libdir": "/usr/lib64",
+    # ... 18 macros total
+}
+```
+
+---
+
+#### `PROVIDE_PATTERNS`
+
+List of compiled regex patterns for resolving virtual RPM provides.
+
+```python
+PROVIDE_PATTERNS: list[tuple[re.Pattern, callable]]
+# 9 patterns: python3dist, pkgconfig, perl, rubygem, npm, cmake, tex, golang, mvn
+```
+
+**Examples:**
+
+| Input | Pattern | Output |
+|---|---|---|
+| `python3dist(requests)` | `python(\d*)dist\((.+)\)` | `python3-requests` |
+| `pkgconfig(glib-2.0)` | `pkgconfig\((.+)\)` | `glib-2.0-devel` |
+| `perl(File::Path)` | `perl\((.+)\)` | `perl-File-Path` |
+| `rubygem(bundler)` | `rubygem\((.+)\)` | `rubygem-bundler` |
+| `npm(typescript)` | `npm\((.+)\)` | `nodejs-typescript` |
+| `cmake(Qt5Core)` | `cmake\((.+)\)` | `cmake-qt5core` |
+| `tex(latex)` | `tex\((.+)\)` | `texlive-latex` |
+| `golang(github.com/foo/bar)` | `golang\((.+)\)` | `golang-github.com-foo-bar` |
+| `mvn(org.apache:commons-lang)` | `mvn\(([^:]+):([^:]+)\)` | `commons-lang` |
+
+---
+
+### Classes
+
+#### `PackageNameResolver`
+
+Rule-based resolver with optional ML fallback.
+
+```python
+class PackageNameResolver:
+    def __init__(self, ml_resolver=None): ...
+```
+
+**Parameters:**
+- `ml_resolver` — optional `MLPackageResolver` instance for ML fallback
+
+**Methods:**
+
+##### `resolve(dep_name: str) -> str`
+
+Resolve a dependency name to a real RPM package name.
+
+**Pipeline:** cache -> expand macros -> virtual provide patterns -> ML fallback -> return expanded name as-is.
+
+**Parameters:**
+- `dep_name` — dependency name from spec file (e.g. `"python3dist(requests)"`)
+
+**Returns:**
+- Resolved RPM package name (e.g. `"python3-requests"`)
+
+**Example:**
+```python
+resolver = PackageNameResolver()
+resolver.resolve("python3dist(requests)")   # "python3-requests"
+resolver.resolve("pkgconfig(glib-2.0)")     # "glib-2.0-devel"
+resolver.resolve("%{python3_pkgversion}-devel")  # "3-devel"
+resolver.resolve("gcc")                     # "gcc" (unchanged)
+```
+
+---
+
+##### `expand_macros(name: str) -> str`
+
+Expand RPM macros in a name using `SYSTEM_MACROS`.
+
+Handles `%{macro}`, `%{?macro}` (conditional), and nested macros.
+
+**Parameters:**
+- `name` — name containing RPM macros
+
+**Returns:**
+- Name with known macros expanded
+
+---
+
+##### `resolve_virtual_provide(name: str) -> Optional[str]`
+
+Try to resolve a virtual provide name using `PROVIDE_PATTERNS`.
+
+**Parameters:**
+- `name` — dependency name that may be a virtual provide
+
+**Returns:**
+- Resolved package name, or `None` if no pattern matched
+
+---
+
+##### `resolve_srpm_name(rpm_name: str) -> list[str]`
+
+Map an RPM binary package name to possible SRPM names.
+
+**Parameters:**
+- `rpm_name` — RPM binary package name
+
+**Returns:**
+- List of possible SRPM names, ordered by likelihood
+
+**Example:**
+```python
+resolver = PackageNameResolver()
+resolver.resolve_srpm_name("python3-requests")  # ["python-requests", "python3-requests"]
+resolver.resolve_srpm_name("glib2-devel")        # ["glib2", "glib2-devel"]
+resolver.resolve_srpm_name("perl-File-Path")     # ["perl-File-Path"]
+resolver.resolve_srpm_name("gcc")                # ["gcc"]
+```
+
+---
+
+## ml_resolver
+
+ML-based package name resolver using TF-IDF and K-Nearest Neighbors. **Optional** -- requires `scikit-learn` (`pip install vibebuild[ml]`).
+
+### Classes
+
+#### `MLPackageResolver`
+
+ML resolver that predicts RPM package names from dependency strings.
+
+```python
+class MLPackageResolver:
+    def __init__(self, model_path: Optional[str] = None): ...
+```
+
+**Parameters:**
+- `model_path` — path to saved model file (joblib). Defaults to `vibebuild/data/model.joblib`
+
+If the model file exists at the given path, it is loaded automatically on construction.
+
+**Attributes:**
+- `confidence_threshold` — minimum cosine similarity for a prediction (default: `0.3`)
+
+**Methods:**
+
+##### `is_available() -> bool`
+
+Check if the resolver is ready to make predictions.
+
+**Returns:**
+- `True` if scikit-learn is installed AND a model has been loaded
+
+---
+
+##### `train(data: list[dict]) -> None`
+
+Train the model on provide-to-package mapping data.
+
+**Parameters:**
+- `data` — list of dicts with keys `"provide"`, `"rpm_name"`, `"srpm_name"`
+
+**Raises:**
+- `RuntimeError` — if scikit-learn is not installed
+- `ValueError` — if data is empty
+
+**Example:**
+```python
+resolver = MLPackageResolver()
+resolver.train([
+    {"provide": "python3dist(requests)", "rpm_name": "python3-requests", "srpm_name": "python-requests"},
+    {"provide": "pkgconfig(glib-2.0)", "rpm_name": "glib2-devel", "srpm_name": "glib2"},
+])
+```
+
+---
+
+##### `predict(dep_name: str) -> Optional[dict]`
+
+Predict the RPM package name for a dependency string.
+
+**Parameters:**
+- `dep_name` — dependency name (e.g. `"python3dist(requests)"`)
+
+**Returns:**
+- Dict `{"rpm_name": ..., "srpm_name": ...}` or `None` if confidence is too low
+
+---
+
+##### `save(path: str) -> None`
+
+Save the trained model to disk (joblib format).
+
+##### `load(path: str) -> None`
+
+Load a trained model from disk.
+
+**Raises:**
+- `FileNotFoundError` — if model file does not exist
+
+---
+
 ## resolver
 
 Module for dependency resolution and build graph construction.
@@ -212,9 +431,15 @@ class DependencyResolver:
     def __init__(
         self,
         koji_client: Optional[KojiClient] = None,
-        koji_tag: str = "fedora-build"
+        koji_tag: str = "fedora-build",
+        name_resolver: Optional[PackageNameResolver] = None,
     ): ...
 ```
+
+**Parameters:**
+- `koji_client` — Koji client instance (default: creates new)
+- `koji_tag` — Koji build tag to check packages against
+- `name_resolver` — optional `PackageNameResolver` for normalizing dependency names before Koji lookup
 
 **Methods:**
 
@@ -311,9 +536,18 @@ class SRPMFetcher:
         self,
         download_dir: Optional[str] = None,
         sources: Optional[list[SRPMSource]] = None,
-        fedora_release: str = "rawhide"
+        fedora_release: str = "rawhide",
+        no_ssl_verify: bool = False,
+        name_resolver: Optional[PackageNameResolver] = None,
     ): ...
 ```
+
+**Parameters:**
+- `download_dir` — directory for downloaded SRPMs
+- `sources` — list of SRPM sources
+- `fedora_release` — Fedora release version
+- `no_ssl_verify` — disable SSL verification
+- `name_resolver` — optional `PackageNameResolver` for SRPM name mapping (e.g. `python3-requests` -> `python-requests`)
 
 **Methods:**
 
@@ -438,8 +672,17 @@ class KojiBuilder:
         scratch: bool = False,
         nowait: bool = False,
         download_dir: Optional[str] = None,
+        no_ssl_verify: bool = False,
+        no_name_resolution: bool = False,
+        no_ml: bool = False,
+        ml_model_path: Optional[str] = None,
     ): ...
 ```
+
+**Parameters:**
+- `no_name_resolution` — disable all package name normalization (macros, virtual provides, ML)
+- `no_ml` — disable only ML-based resolution (keep rule-based)
+- `ml_model_path` — custom path to ML model file (default: built-in `vibebuild/data/model.joblib`)
 
 **Methods:**
 
@@ -531,7 +774,8 @@ VibeBuildError                    # Base exception
 │   └── CircularDependencyError   # Circular dependency
 ├── SRPMNotFoundError             # SRPM not found
 ├── KojiBuildError                # Build error
-└── KojiConnectionError           # Koji connection error
+├── KojiConnectionError           # Koji connection error
+└── NameResolutionError           # Package name resolution error
 ```
 
 ### Usage
@@ -541,12 +785,15 @@ from vibebuild.exceptions import (
     VibeBuildError,
     InvalidSRPMError,
     CircularDependencyError,
+    NameResolutionError,
 )
 
 try:
     result = builder.build_with_deps("package.src.rpm")
 except CircularDependencyError as e:
     print(f"Circular dependency: {e}")
+except NameResolutionError as e:
+    print(f"Name resolution failed: {e}")
 except VibeBuildError as e:
     print(f"Build error: {e}")
 ```

@@ -44,6 +44,19 @@ pytest tests/test_analyzer.py
 pytest tests/test_analyzer.py::test_get_build_requires
 ```
 
+### Running Name Resolution Tests
+
+```bash
+# All name resolver tests (49 tests)
+pytest tests/test_name_resolver.py -v
+
+# All ML resolver tests (26 tests, requires scikit-learn)
+pytest tests/test_ml_resolver.py -v
+
+# Both together
+pytest tests/test_name_resolver.py tests/test_ml_resolver.py -v
+```
+
 ### Running by Marker
 
 ```bash
@@ -69,9 +82,41 @@ tests/
 ├── test_fetcher.py          # Fetcher tests
 ├── test_builder.py          # Builder tests
 ├── test_cli.py              # CLI tests
+├── test_name_resolver.py    # Name resolver tests (49 tests, 9 classes)
+├── test_ml_resolver.py      # ML resolver tests (26 tests, 7 classes)
 └── integration/             # Integration tests
     └── test_e2e.py
 ```
+
+### test_name_resolver.py (49 tests)
+
+Tests for rule-based `PackageNameResolver`:
+
+| Test Class | Count | What's tested |
+|---|---|---|
+| `TestPackageNameResolverVirtualProvides` | 11 | All 9 provide patterns (python3dist, pkgconfig, perl, rubygem, npm, golang, tex, mvn, cmake) plus edge cases |
+| `TestPackageNameResolverMacros` | 6 | Macro expansion: `%{python3_pkgversion}`, conditional `%{?...}`, unknown macros, multiple macros |
+| `TestPackageNameResolverPlainNames` | 3 | Passthrough for plain names like `gcc`, empty strings |
+| `TestPackageNameResolverSRPMNames` | 9 | SRPM name mapping: python3-X, python2-X, -devel, -libs, perl-, rubygem-, nodejs-, golang- |
+| `TestPackageNameResolverCaching` | 3 | In-memory cache behavior |
+| `TestPackageNameResolverMLFallback` | 7 | ML integration: called for unresolved provides, not called when rules match, exception handling, graceful degradation |
+| `TestSystemMacros` | 5 | Validate SYSTEM_MACROS entries |
+| `TestProvidePatterns` | 2 | Validate PROVIDE_PATTERNS structure |
+| `TestResolveVirtualProvide` | 3 | Direct `resolve_virtual_provide()` method |
+
+### test_ml_resolver.py (26 tests)
+
+Tests for ML-based `MLPackageResolver`:
+
+| Test Class | Count | What's tested |
+|---|---|---|
+| `TestMLPackageResolverInstantiation` | 2 | Constructor with/without model path |
+| `TestMLPackageResolverTrain` | 3 | Training on sample data, empty data error, vocabulary check |
+| `TestMLPackageResolverPredict` | 6 | Exact matches (python3dist, pkgconfig, perl), garbage input returns None, unavailable model |
+| `TestMLPackageResolverSaveLoad` | 5 | Save/load roundtrip, directory creation, error handling |
+| `TestMLPackageResolverIsAvailable` | 3 | Availability after training, without model, after load |
+| `TestMLPackageResolverCache` | 5 | Prediction caching, disk persistence, corrupt file handling |
+| `TestMLPackageResolverWithoutSklearn` | 2 | Mocked `HAS_SKLEARN=False`: train error, availability check |
 
 ---
 
@@ -188,6 +233,32 @@ def test_download_srpm_from_koji(mocker):
     fetcher = SRPMFetcher(download_dir="/tmp/test")
 
     # ... test logic
+```
+
+### Mock ML resolver
+
+```python
+def test_resolve_with_ml_fallback(mocker):
+    """Test that ML resolver is called for unresolved virtual provides."""
+    mock_ml = mocker.Mock()
+    mock_ml.predict.return_value = "custom-package"
+
+    resolver = PackageNameResolver(ml_resolver=mock_ml)
+    result = resolver.resolve("unknown_provider(something)")
+
+    mock_ml.predict.assert_called_once_with("unknown_provider(something)")
+    assert result == "custom-package"
+
+
+def test_resolve_ml_not_called_when_rules_match(mocker):
+    """Test that ML is skipped when rule-based resolution succeeds."""
+    mock_ml = mocker.Mock()
+
+    resolver = PackageNameResolver(ml_resolver=mock_ml)
+    result = resolver.resolve("python3dist(requests)")
+
+    mock_ml.predict.assert_not_called()
+    assert result == "python3-requests"
 ```
 
 ### Mock filesystem

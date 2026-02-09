@@ -7,9 +7,14 @@
 - [Архитектура системы](#архитектура-системы)
 - [Компоненты VibeBuild](#компоненты-vibebuild)
   - [Analyzer -- анализ SRPM](#1-analyzer----анализ-srpm)
-  - [Resolver -- разрешение зависимостей](#2-resolver----разрешение-зависимостей)
-  - [Fetcher -- скачивание SRPM](#3-fetcher----скачивание-srpm)
-  - [Builder -- оркестрация сборки](#4-builder----оркестрация-сборки)
+  - [Name Resolver -- разрешение имён пакетов](#2-name-resolver----разрешение-имён-пакетов)
+  - [Resolver -- разрешение зависимостей](#3-resolver----разрешение-зависимостей)
+  - [Fetcher -- скачивание SRPM](#4-fetcher----скачивание-srpm)
+  - [Builder -- оркестрация сборки](#5-builder----оркестрация-сборки)
+- [Разрешение имён пакетов](#разрешение-имён-пакетов)
+  - [Проблема](#проблема)
+  - [Rule-based разрешение](#rule-based-разрешение)
+  - [ML-компонент](#ml-компонент)
 - [Полный цикл работы vibebuild](#полный-цикл-работы-vibebuild)
 - [Диаграмма последовательности](#диаграмма-последовательности)
 - [Разрешение зависимостей и DAG](#разрешение-зависимостей-и-dag)
@@ -67,6 +72,7 @@ graph TB
 
     subgraph vibebuild [VibeBuild -- Python-приложение]
         Analyzer["Analyzer<br/>analyzer.py"]
+        NameResolver["Name Resolver<br/>name_resolver.py + ml_resolver.py"]
         Resolver["Resolver<br/>resolver.py"]
         Fetcher["Fetcher<br/>fetcher.py"]
         Builder["Builder<br/>builder.py"]
@@ -87,7 +93,8 @@ graph TB
 
     CLI --> Analyzer
     CLI --> Builder
-    Analyzer --> Resolver
+    Analyzer --> NameResolver
+    NameResolver --> Resolver
     Resolver --> Fetcher
     Resolver --> Hub
     Fetcher --> FedoraKoji
@@ -105,7 +112,8 @@ graph TB
 ```mermaid
 graph LR
     SRPM["SRPM-файл<br/>.src.rpm"] --> Analyzer
-    Analyzer -->|"PackageInfo<br/>BuildRequires"| Resolver
+    Analyzer -->|"PackageInfo<br/>BuildRequires"| NR["Name Resolver<br/>правила + ML"]
+    NR -->|"Нормализованные имена"| Resolver
     Resolver -->|"Запрос недостающих"| Fetcher
     Fetcher -->|"Скачанные SRPM"| Resolver
     Resolver -->|"DAG + build chain"| Builder
@@ -151,7 +159,44 @@ graph LR
 
 ---
 
-### 2. Resolver -- разрешение зависимостей
+### 2. Name Resolver -- разрешение имён пакетов
+
+**Файлы:** `vibebuild/name_resolver.py`, `vibebuild/ml_resolver.py`
+
+**Ответственность:** преобразование виртуальных имён зависимостей из spec-файлов в реальные имена RPM-пакетов, а также маппинг RPM-имён в SRPM-имена.
+
+```mermaid
+graph TB
+    Input["Имя зависимости из spec"] --> Cache{"Кеш?"}
+    Cache -->|"Есть"| Result["Результат"]
+    Cache -->|"Нет"| Macros["Раскрытие макросов<br/>SYSTEM_MACROS"]
+    Macros --> Patterns{"Паттерны provides?"}
+    Patterns -->|"Совпало"| Result
+    Patterns -->|"Нет"| ML{"ML-фоллбэк<br/>TF-IDF + KNN"}
+    ML -->|"Предсказано"| Result
+    ML -->|"Нет модели"| Original["Оригинальное имя"]
+```
+
+**Ключевые классы:**
+
+- `PackageNameResolver` -- пайплайн разрешения имён: кеш -> макросы -> паттерны -> ML-фоллбэк
+- `MLPackageResolver` -- опциональная ML-модель на scikit-learn (TF-IDF char n-grams + KNN)
+
+**Примеры преобразований:**
+
+| В spec-файле | После разрешения | Имя SRPM |
+|---|---|---|
+| `python3dist(requests)` | `python3-requests` | `python-requests` |
+| `pkgconfig(glib-2.0)` | `glib-2.0-devel` | `glib-2.0` |
+| `perl(File::Path)` | `perl-File-Path` | `perl-File-Path` |
+| `%{python3_pkgversion}-devel` | `3-devel` (через макрос) | -- |
+| `npm(typescript)` | `nodejs-typescript` | `nodejs-typescript` |
+
+Подробнее см. [Разрешение имён пакетов](#разрешение-имён-пакетов).
+
+---
+
+### 3. Resolver -- разрешение зависимостей
 
 **Файл:** `vibebuild/resolver.py`
 
@@ -208,7 +253,7 @@ graph TB
 
 ---
 
-### 3. Fetcher -- скачивание SRPM
+### 4. Fetcher -- скачивание SRPM
 
 **Файл:** `vibebuild/fetcher.py`
 
@@ -240,7 +285,7 @@ graph TB
 
 ---
 
-### 4. Builder -- оркестрация сборки
+### 5. Builder -- оркестрация сборки
 
 **Файл:** `vibebuild/builder.py`
 
@@ -281,6 +326,97 @@ graph TB
    - Ждет регенерации репозитория (`koji wait-repo`)
 5. Собирает целевой пакет
 6. Возвращает `BuildResult` с полной информацией
+
+---
+
+## Разрешение имён пакетов
+
+### Проблема
+
+Spec-файлы RPM-пакетов часто содержат имена зависимостей, которые не соответствуют реальным именам пакетов в репозитории. Это приводит к тому, что стандартный поиск в Koji не находит пакет.
+
+**Типичные проблемные случаи:**
+
+| В spec-файле | Что это | Реальное имя RPM | Имя SRPM |
+|---|---|---|---|
+| `python3dist(requests)` | Виртуальный provide Python | `python3-requests` | `python-requests` |
+| `python3dist(setuptools)` | Виртуальный provide Python | `python3-setuptools` | `python-setuptools` |
+| `%{python3_pkgversion}-devel` | Нераскрытый макрос RPM | `python3-devel` | `python3` |
+| `pkgconfig(glib-2.0)` | pkg-config provide | `glib-2.0-devel` | `glib-2.0` |
+| `perl(File::Path)` | Perl модуль | `perl-File-Path` | `perl-File-Path` |
+| `cmake(Qt5Core)` | CMake модуль | `cmake-qt5core` | -- |
+| `npm(typescript)` | npm пакет | `nodejs-typescript` | `nodejs-typescript` |
+| `rubygem(bundler)` | Ruby gem | `rubygem-bundler` | `rubygem-bundler` |
+| `golang(github.com/foo/bar)` | Go модуль | `golang-github.com-foo-bar` | `golang-github.com-foo-bar` |
+| `mvn(org.apache:commons-lang)` | Maven артефакт | `commons-lang` | `commons-lang` |
+
+### Rule-based разрешение
+
+`PackageNameResolver` (`vibebuild/name_resolver.py`) реализует трёхступенчатый пайплайн:
+
+```mermaid
+flowchart TB
+    Input["Имя зависимости из spec"] --> Step1["Шаг 1: Раскрытие макросов<br/>18 системных макросов RPM"]
+    Step1 --> Step2{"Шаг 2: Паттерны provides<br/>9 regex-паттернов"}
+    Step2 -->|"Совпало"| Resolved["Нормализованное имя RPM"]
+    Step2 -->|"Не совпало"| Step3{"Шаг 3: ML-фоллбэк<br/>TF-IDF + KNN"}
+    Step3 -->|"Предсказано"| Resolved
+    Step3 -->|"Нет модели / низкая уверенность"| Original["Раскрытое имя как есть"]
+
+    Resolved --> SRPM["resolve_srpm_name()<br/>Маппинг RPM -> SRPM"]
+    Original --> SRPM
+```
+
+**Раскрытие макросов** -- таблица `SYSTEM_MACROS` содержит 18 известных системных макросов RPM:
+- `%{python3_pkgversion}` -> `3`
+- `%{python3_version}` -> `3.12`
+- `%{_bindir}` -> `/usr/bin`
+- `%{_libdir}` -> `/usr/lib64`
+- и другие
+
+**Паттерны виртуальных provides** -- 9 скомпилированных regex-паттернов с функциями-трансформерами:
+- `python(\d*)dist(...)` -> `python{N}-{name}`
+- `pkgconfig(...)` -> `{name}-devel`
+- `perl(...)` -> `perl-{name}` (с заменой `::` на `-`)
+- `rubygem(...)`, `npm(...)`, `cmake(...)`, `tex(...)`, `golang(...)`, `mvn(...)`
+
+**Маппинг RPM -> SRPM** -- метод `resolve_srpm_name()` генерирует варианты SRPM-имён:
+- `python3-requests` -> `["python-requests", "python3-requests"]`
+- `glib2-devel` -> `["glib2", "glib2-devel"]`
+- `perl-File-Path` -> `["perl-File-Path"]`
+
+### ML-компонент
+
+Когда rule-based паттерны не справляются (неизвестный виртуальный provide), включается ML-фоллбэк.
+
+**Модуль:** `vibebuild/ml_resolver.py`
+
+**Архитектура модели:**
+
+```mermaid
+flowchart LR
+    Input["Строка зависимости"] --> TFIDF["TF-IDF Vectorizer<br/>char n-grams 2-5<br/>max 50k features"]
+    TFIDF --> KNN["K-Nearest Neighbors<br/>cosine distance<br/>k=5"]
+    KNN --> Threshold{"distance <= 0.3?"}
+    Threshold -->|"Да"| Result["rpm_name + srpm_name"]
+    Threshold -->|"Нет"| None["None<br/>слишком низкая уверенность"]
+```
+
+**Обучение:**
+
+1. **Сбор данных** (`scripts/collect_training_data.py`): парсинг `primary.xml.gz` из репозиториев Fedora, извлечение маппингов provides -> package name (~50,000-100,000 записей)
+2. **Обучение** (`scripts/train_model.py`): TF-IDF + KNN, оценка на тестовой выборке
+3. **Модель** сохраняется в `vibebuild/data/model.joblib` (~5-15 MB)
+
+```bash
+# Полный цикл обучения
+python scripts/collect_training_data.py --output data/training_data.json --release 40
+python scripts/train_model.py --input data/training_data.json --output vibebuild/data/model.joblib
+```
+
+**Кеширование:** предсказания ML кешируются в `~/.cache/vibebuild/ml_name_cache.json` для повторного использования.
+
+**Опциональность:** ML-компонент требует `scikit-learn` (`pip install vibebuild[ml]`). Без него VibeBuild работает с rule-based разрешением. ML молча отключается, если не установлен.
 
 ---
 
@@ -512,6 +648,9 @@ classDiagram
     class KojiConnectionError {
         Ошибка подключения к Koji Hub
     }
+    class NameResolutionError {
+        Ошибка разрешения имени пакета
+    }
 
     VibeBuildError <|-- InvalidSRPMError
     VibeBuildError <|-- SpecParseError
@@ -520,6 +659,7 @@ classDiagram
     VibeBuildError <|-- SRPMNotFoundError
     VibeBuildError <|-- KojiBuildError
     VibeBuildError <|-- KojiConnectionError
+    VibeBuildError <|-- NameResolutionError
 ```
 
 ---
@@ -533,9 +673,18 @@ koji-vibebuild/
 │   ├── analyzer.py             # Парсинг SRPM/spec, извлечение BuildRequires
 │   ├── builder.py              # Оркестрация сборки в Koji
 │   ├── cli.py                  # CLI-интерфейс (точка входа)
-│   ├── exceptions.py           # Иерархия исключений
+│   ├── exceptions.py           # Иерархия исключений (+ NameResolutionError)
 │   ├── fetcher.py              # Скачивание SRPM из Fedora
-│   └── resolver.py             # Разрешение зависимостей, построение DAG
+│   ├── name_resolver.py        # Разрешение имён пакетов (правила + ML-обертка)
+│   ├── ml_resolver.py          # ML-модель (TF-IDF + KNN, scikit-learn)
+│   ├── resolver.py             # Разрешение зависимостей, построение DAG
+│   └── data/                   # Данные ML-модели
+│       ├── .gitkeep
+│       └── model.joblib        # Предобученная модель (после обучения)
+│
+├── scripts/                    # Скрипты для ML
+│   ├── collect_training_data.py # Сбор данных из Fedora (primary.xml)
+│   └── train_model.py          # Обучение ML-модели
 │
 ├── tests/                      # Тесты
 │   ├── conftest.py             # Фикстуры pytest
@@ -543,7 +692,9 @@ koji-vibebuild/
 │   ├── test_builder.py         # Тесты билдера
 │   ├── test_cli.py             # Тесты CLI
 │   ├── test_fetcher.py         # Тесты загрузчика
-│   └── test_resolver.py        # Тесты разрешения зависимостей
+│   ├── test_resolver.py        # Тесты разрешения зависимостей
+│   ├── test_name_resolver.py   # Тесты разрешения имён (49 тестов)
+│   └── test_ml_resolver.py     # Тесты ML-модели (26 тестов)
 │
 ├── ansible/                    # Ansible-автоматизация деплоя Koji
 │   ├── playbook.yml            # Главный плейбук
@@ -565,7 +716,7 @@ koji-vibebuild/
 │   ├── TESTING.md              # Руководство по тестированию
 │   └── VPS_SETUP.md            # Руководство по созданию VPS-сервера
 │
-├── pyproject.toml              # Метаданные проекта, конфигурация инструментов
+├── pyproject.toml              # Метаданные, optional deps: [ml] scikit-learn+joblib
 ├── setup.py                    # Setuptools
 ├── requirements.txt            # Зависимости (requests>=2.25.0)
 ├── requirements-dev.txt        # Dev-зависимости (pytest, black, mypy...)
@@ -647,6 +798,15 @@ vibebuild --dry-run fedora-target my-package.src.rpm
 
 # Сборка без разрешения зависимостей (аналог koji build)
 vibebuild --no-deps fedora-target my-package.src.rpm
+
+# Отключить ML-разрешение имён (только правила)
+vibebuild --no-ml fedora-target my-package.src.rpm
+
+# Отключить всю нормализацию имён
+vibebuild --no-name-resolution fedora-target my-package.src.rpm
+
+# Использовать свою ML-модель
+vibebuild --ml-model /path/to/model.joblib fedora-target my-package.src.rpm
 ```
 
 ### Опции Koji-сервера
@@ -671,3 +831,11 @@ vibebuild \
 | Только скачивание | `--download-only` | Скачать SRPM из Fedora |
 | Сухой запуск | `--dry-run` | Показать план без реальной сборки |
 | Scratch | `--scratch` | Сборка без тегирования результата |
+
+### Опции разрешения имён
+
+| Флаг | Описание |
+|---|---|
+| `--no-name-resolution` | Отключить всю нормализацию имён (макросы, виртуальные provides, ML) |
+| `--no-ml` | Отключить ML-фоллбэк (оставить только rule-based разрешение) |
+| `--ml-model PATH` | Путь к своей ML-модели (по умолчанию: встроенная `vibebuild/data/model.joblib`) |

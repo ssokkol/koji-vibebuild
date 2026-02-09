@@ -17,9 +17,13 @@ VibeBuild is an extension for Koji that automates dependency resolution when bui
                               ▼
 ┌─────────────────────────────────────────────────────────────────┐
 │                      VibeBuild CLI                               │
-│  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐        │
-│  │ Analyzer │  │ Resolver │  │ Fetcher  │  │ Builder  │        │
-│  └──────────┘  └──────────┘  └──────────┘  └──────────┘        │
+│  ┌──────────┐  ┌──────────────┐  ┌──────────┐  ┌──────────┐   │
+│  │ Analyzer │  │NameResolver  │  │ Resolver │  │ Builder  │   │
+│  └──────────┘  │(rules + ML)  │  └──────────┘  └──────────┘   │
+│                └──────────────┘                                  │
+│                ┌──────────────┐                                  │
+│                │   Fetcher    │                                  │
+│                └──────────────┘                                  │
 └─────────────────────────────┬───────────────────────────────────┘
                               │
               ┌───────────────┼───────────────┐
@@ -72,26 +76,79 @@ SRPM File ──► rpm2cpio ──► .spec file ──► SpecAnalyzer ──�
                                                     └─────────────────┘
 ```
 
-### 2. Resolver (`resolver.py`)
+### 2. Name Resolver (`name_resolver.py` + `ml_resolver.py`)
+
+**Responsibility:** Resolving virtual RPM dependency names to real package names.
+
+Spec files often contain dependency names that don't match real RPM package names:
+- `python3dist(requests)` -- virtual provide, real package: `python3-requests`
+- `%{python3_pkgversion}-devel` -- unexpanded macro, real package: `python3-devel`
+- `pkgconfig(glib-2.0)` -- pkgconfig provide, real package: `glib-2.0-devel`
+
+The Name Resolver handles this through a multi-phase pipeline:
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                   PackageNameResolver                            │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│   Input ──► Cache ──► Expand Macros ──► Provide Patterns        │
+│               │           │                   │                  │
+│            (hit)      SYSTEM_MACROS      PROVIDE_PATTERNS       │
+│               │       (18 macros)       (9 regex patterns)      │
+│               ▼           │                   │                  │
+│            Result    ──►──┤──────►─────►──────┤                  │
+│                           │                   │                  │
+│                           ▼                   ▼                  │
+│                     ┌──────────────────────────────┐             │
+│                     │  ML Fallback (optional)      │             │
+│                     │  TF-IDF + KNN (scikit-learn) │             │
+│                     └──────────────────────────────┘             │
+│                           │                                      │
+│                           ▼                                      │
+│                      Resolved Name                               │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+**Components:**
+
+- `PackageNameResolver` -- rule-based resolver with macro expansion, virtual provide patterns, SRPM name mapping, and ML fallback
+- `MLPackageResolver` -- optional ML model using TF-IDF character n-grams (2-5) and K-Nearest Neighbors with cosine distance. Trained on Fedora's provides-to-package mappings
+
+**Integration points:**
+
+- `Analyzer` uses `SYSTEM_MACROS` for better macro expansion
+- `Resolver` normalizes names before checking Koji
+- `Fetcher` uses `resolve_srpm_name()` to try multiple SRPM name variants
+- `Builder` creates and wires the resolver into all components
+
+**ML model is optional:** If scikit-learn is not installed, ML fallback silently degrades. Install with `pip install vibebuild[ml]`.
+
+---
+
+### 3. Resolver (`resolver.py`)
 
 **Responsibility:** Checking dependency availability in Koji, building dependency graph.
 
 ```
-┌─────────────────────────────────────────┐
-│            DependencyResolver           │
-├─────────────────────────────────────────┤
-│ + find_missing_deps(deps, tag) -> list  │
-│ + build_dependency_graph(pkg, srpm)     │
-│ + topological_sort() -> list[str]       │
-│ + get_build_chain() -> list[list[str]]  │
-├─────────────────────────────────────────┤
-│              KojiClient                 │
-├─────────────────────────────────────────┤
-│ + list_packages(tag) -> list[str]       │
-│ + list_tagged_builds(tag) -> dict       │
-│ + package_exists(pkg, tag) -> bool      │
-└─────────────────────────────────────────┘
+┌───────────────────────────────────────────────────┐
+│            DependencyResolver                      │
+├───────────────────────────────────────────────────┤
+│ + __init__(koji_client, koji_tag, name_resolver)  │
+│ + find_missing_deps(deps, tag) -> list            │
+│ + build_dependency_graph(pkg, srpm)               │
+│ + topological_sort() -> list[str]                 │
+│ + get_build_chain() -> list[list[str]]            │
+├───────────────────────────────────────────────────┤
+│              KojiClient                            │
+├───────────────────────────────────────────────────┤
+│ + list_packages(tag) -> list[str]                 │
+│ + list_tagged_builds(tag) -> dict                 │
+│ + package_exists(pkg, tag) -> bool                │
+└───────────────────────────────────────────────────┘
 ```
+
+**Name resolution integration:** `find_missing_deps()` normalizes dependency names via `name_resolver.resolve()` before checking Koji. Falls back to the original name if the resolved name is not found either.
 
 **DAG Construction Algorithm:**
 
@@ -138,23 +195,26 @@ Build Order: [lib-foo, lib-baz, my-app]
 Build Chain: [[lib-foo, lib-baz], [my-app]]
 ```
 
-### 3. Fetcher (`fetcher.py`)
+### 4. Fetcher (`fetcher.py`)
 
 **Responsibility:** Downloading SRPMs from external sources.
 
 ```
-┌─────────────────────────────────────────┐
-│              SRPMFetcher                │
-├─────────────────────────────────────────┤
-│ + download_srpm(name, version) -> path  │
-│ + search_fedora_src(name) -> list       │
-│ + get_package_versions(name) -> list    │
-├─────────────────────────────────────────┤
-│ - _download_from_koji(...)              │
-│ - _download_from_src(...)               │
-│ - _extract_sources(spec)                │
-└─────────────────────────────────────────┘
+┌───────────────────────────────────────────────────────────┐
+│              SRPMFetcher                                   │
+├───────────────────────────────────────────────────────────┤
+│ + __init__(download_dir, sources, ..., name_resolver)     │
+│ + download_srpm(name, version) -> path                    │
+│ + search_fedora_src(name) -> list                         │
+│ + get_package_versions(name) -> list                      │
+├───────────────────────────────────────────────────────────┤
+│ - _download_from_koji(...)                                │
+│ - _download_from_src(...)                                 │
+│ - _extract_sources(spec)                                  │
+└───────────────────────────────────────────────────────────┘
 ```
+
+**SRPM name resolution:** When `name_resolver` is provided, `download_srpm()` uses `resolve_srpm_name()` to generate multiple SRPM name variants. For example, `python3-requests` is tried as both `python-requests` and `python3-requests`. Each variant is tried across all sources before moving to the next variant.
 
 **SRPM Sources (in priority order):**
 
@@ -166,7 +226,7 @@ Build Chain: [[lib-foo, lib-baz], [my-app]]
    - Method: download spec + sources, build SRPM locally
    - Used as fallback
 
-### 4. Builder (`builder.py`)
+### 5. Builder (`builder.py`)
 
 **Responsibility:** Build orchestration in Koji.
 
@@ -216,16 +276,21 @@ Build Chain: [[lib-foo, lib-baz], [my-app]]
 └──────────────────────┘
 ```
 
-### 5. CLI (`cli.py`)
+### 6. CLI (`cli.py`)
 
 **Responsibility:** User command interface.
 
 ```
 Commands:
-  vibebuild TARGET SRPM          # Build with deps
-  vibebuild --analyze-only SRPM  # Only analyze
-  vibebuild --download-only PKG  # Only download
-  vibebuild --dry-run TARGET SRPM # Show plan
+  vibebuild TARGET SRPM                   # Build with deps
+  vibebuild --analyze-only SRPM           # Only analyze
+  vibebuild --download-only PKG           # Only download
+  vibebuild --dry-run TARGET SRPM         # Show plan
+
+Name Resolution Options:
+  --no-name-resolution                    # Disable all name normalization
+  --no-ml                                 # Disable ML fallback (rules only)
+  --ml-model PATH                         # Custom ML model file
 ```
 
 ## Koji Infrastructure
@@ -320,7 +385,8 @@ VibeBuildError
 │   └── CircularDependencyError
 ├── SRPMNotFoundError
 ├── KojiBuildError
-└── KojiConnectionError
+├── KojiConnectionError
+└── NameResolutionError
 ```
 
 ## Performance
@@ -330,6 +396,8 @@ VibeBuildError
 - **Available packages cache:** package list in Koji tag is cached
 - **Downloaded SRPMs cache:** downloaded SRPMs are saved for reuse
 - **Dependency graph cache:** dependency graph is built once
+- **Name resolution cache:** resolved names are cached in memory (per session)
+- **ML prediction cache:** ML predictions are cached to `~/.cache/vibebuild/ml_name_cache.json` (persistent across sessions)
 
 ### Parallelism
 

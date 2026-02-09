@@ -579,13 +579,36 @@ EOF
 # Из PyPI
 pip install vibebuild
 
+# С ML-поддержкой (опционально, для улучшенного разрешения имён пакетов)
+pip install vibebuild[ml]
+
 # Или из исходников
 git clone https://github.com/vibebuild/vibebuild.git
 cd vibebuild
 pip install -e .
+# Опционально: ML-зависимости
+pip install -e ".[ml]"
 ```
 
-### 5.4 Установка системных зависимостей
+### 5.4 Настройка ML-модели (опционально)
+
+Если вы установили ML-зависимости, можно обучить модель для улучшенного разрешения имён пакетов:
+
+```bash
+cd vibebuild
+
+# 1. Сбор данных из Fedora (скачивает ~50-100 МБ метаданных)
+python scripts/collect_training_data.py --output data/training_data.json --release 40
+
+# 2. Обучение модели (~5-15 МБ)
+python scripts/train_model.py --input data/training_data.json --output vibebuild/data/model.joblib
+
+# Модель автоматически подхватывается VibeBuild при запуске
+```
+
+Без ML-модели VibeBuild работает с rule-based разрешением имён (9 паттернов виртуальных provides + 18 системных макросов).
+
+### 5.5 Установка системных зависимостей
 
 ```bash
 # Fedora / RHEL
@@ -598,7 +621,7 @@ brew install rpm
 sudo apt install -y koji rpm rpm2cpio
 ```
 
-### 5.5 Проверка подключения
+### 5.6 Проверка подключения
 
 ```bash
 # Проверка подключения к Koji
@@ -655,6 +678,13 @@ vibebuild --dry-run \
 
 # Полная сборка
 vibebuild \
+    --server https://YOUR_VPS_IP/kojihub \
+    --cert ~/.koji/client.pem \
+    --serverca ~/.koji/serverca.crt \
+    fedora-target python-six-*.src.rpm
+
+# Сборка без ML (только rule-based разрешение имён)
+vibebuild --no-ml \
     --server https://YOUR_VPS_IP/kojihub \
     --cert ~/.koji/client.pem \
     --serverca ~/.koji/serverca.crt \
@@ -861,4 +891,7 @@ sudo systemctl restart httpd kojid
 
 ```bash
 pip install --upgrade vibebuild
+
+# С ML-поддержкой
+pip install --upgrade vibebuild[ml]
 ```
