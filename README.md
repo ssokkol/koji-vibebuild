@@ -125,6 +125,8 @@ ansible-playbook -i inventory/hosts.ini playbook.yml
 
 ## Documentation
 
+- [PROJECT_OVERVIEW.md](docs/PROJECT_OVERVIEW.md) — full project description with diagrams
+- [VPS_SETUP.md](docs/VPS_SETUP.md) — VPS server creation and setup guide
 - [ARCHITECTURE.md](docs/ARCHITECTURE.md) — system architecture
 - [API.md](docs/API.md) — API documentation
 - [DEPLOYMENT.md](docs/DEPLOYMENT.md) — deployment guide
