@@ -144,6 +144,8 @@ Thumbs.db
 /downloads/
 *.src.rpm
 *.rpm
+data/training_data.json
+.cursor/
 
 # Ansible
 *.retry
