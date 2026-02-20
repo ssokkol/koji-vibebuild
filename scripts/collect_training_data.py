@@ -101,13 +101,13 @@ def discover_mirror(release: int, arch: str) -> Optional[str]:
 
 def find_primary_xml_url(base_url: str) -> Optional[str]:
     """
-    Parse repomd.xml to find the location of primary.xml.gz.
+    Parse repomd.xml to find the location of primary metadata (primary.xml.gz or primary.xml.zst).
 
     Args:
         base_url: Base URL of the Fedora repository.
 
     Returns:
-        Full URL to primary.xml.gz, or None if not found.
+        Full URL to primary.xml.gz or primary.xml.zst, or None if not found.
     """
     repomd_url = f"{base_url}/repodata/repomd.xml"
     logger.info("Fetching repomd.xml from %s", repomd_url)
@@ -129,7 +129,7 @@ def find_primary_xml_url(base_url: str) -> Optional[str]:
                     href = location.get("href")
                     if href:
                         primary_url = f"{base_url}/{href}"
-                        logger.info("Found primary.xml.gz: %s", primary_url)
+                        logger.info("Found primary: %s", primary_url)
                         return primary_url
     except ET.ParseError as e:
         logger.error("Failed to parse repomd.xml: %s", e)
@@ -137,73 +137,105 @@ def find_primary_xml_url(base_url: str) -> Optional[str]:
     return None
 
 
+def _open_primary_stream(tmp_path: str):
+    """
+    Open downloaded primary file as a decompressed binary stream (gzip or zstd).
+    Returns (stream, close_func). Call close_func when done to avoid leaking processes.
+    """
+    with open(tmp_path, "rb") as f:
+        magic = f.read(4)
+    if magic[:2] == b"\x1f\x8b":
+        f = gzip.open(tmp_path, "rb")
+        return f, f.close
+    if magic[:4] == b"(\xb5/\xfd":
+        # Zstandard: decompress with zstd -d -c
+        proc = subprocess.Popen(
+            ["zstd", "-d", "-c", tmp_path],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+        )
+        if proc.stdout is None:
+            raise OSError("zstd produced no stdout")
+
+        def close_zstd():
+            proc.stdout.close()
+            proc.wait()
+
+        return proc.stdout, close_zstd
+    raise ValueError("Unknown compression (not gzip or zstd)")
+
+
 def download_and_parse_primary(primary_url: str) -> list[dict]:
     """
-    Download primary.xml.gz and extract provides-to-package mappings.
+    Download primary metadata (primary.xml.gz or .zst) and extract provides-to-package mappings.
 
     Args:
-        primary_url: URL to primary.xml.gz file.
+        primary_url: URL to primary.xml.gz or primary.xml.zst file.
 
     Returns:
         List of dicts with keys "provide", "rpm_name", "srpm_name".
     """
-    logger.info("Downloading primary.xml.gz (this may take a while)...")
+    logger.info("Downloading primary metadata (this may take a while)...")
 
-    with tempfile.NamedTemporaryFile(suffix=".xml.gz", delete=False) as tmp:
+    with tempfile.NamedTemporaryFile(suffix=".primary", delete=False) as tmp:
         tmp_path = tmp.name
         try:
             req = Request(primary_url, headers={"User-Agent": "vibebuild/0.1"})
             with urlopen(req, timeout=300) as resp:
                 shutil.copyfileobj(resp, tmp)
         except (URLError, OSError) as e:
-            logger.error("Failed to download primary.xml.gz: %s", e)
+            logger.error("Failed to download primary: %s", e)
             return []
 
-    logger.info("Parsing primary.xml.gz...")
+    logger.info("Parsing primary metadata...")
     mappings = []
+    stream = None
+    close_stream = None
 
     try:
-        with gzip.open(tmp_path, "rb") as f:
-            # Use iterparse for memory efficiency on large XML
-            context = ET.iterparse(f, events=("end",))
-            for event, elem in context:
-                if elem.tag == f"{{{COMMON_NS}}}package" and elem.get("type") == "rpm":
-                    rpm_name = _extract_text(elem, f"{{{COMMON_NS}}}name")
-                    arch = _extract_text(elem, f"{{{COMMON_NS}}}arch")
+        stream, close_stream = _open_primary_stream(tmp_path)
+        # Use iterparse for memory efficiency on large XML
+        context = ET.iterparse(stream, events=("end",))
+        for event, elem in context:
+            if elem.tag == f"{{{COMMON_NS}}}package" and elem.get("type") == "rpm":
+                rpm_name = _extract_text(elem, f"{{{COMMON_NS}}}name")
+                arch = _extract_text(elem, f"{{{COMMON_NS}}}arch")
 
-                    # Skip source RPMs in the binary repo listing
-                    if arch == "src":
-                        elem.clear()
-                        continue
-
-                    # Extract source RPM name
-                    fmt_elem = elem.find(f"{{{COMMON_NS}}}format")
-                    srpm_full = ""
-                    if fmt_elem is not None:
-                        srpm_elem = fmt_elem.find(f"{{{RPM_NS}}}sourcerpm")
-                        if srpm_elem is not None and srpm_elem.text:
-                            srpm_full = srpm_elem.text
-
-                    srpm_name = _parse_srpm_name(srpm_full) if srpm_full else rpm_name
-
-                    # Extract provides
-                    if fmt_elem is not None:
-                        provides_elem = fmt_elem.find(f"{{{RPM_NS}}}provides")
-                        if provides_elem is not None:
-                            for entry in provides_elem.findall(f"{{{RPM_NS}}}entry"):
-                                provide_name = entry.get("name", "")
-                                if _is_interesting_provide(provide_name, rpm_name):
-                                    mappings.append({
-                                        "provide": provide_name,
-                                        "rpm_name": rpm_name,
-                                        "srpm_name": srpm_name,
-                                    })
-
-                    # Free memory
+                # Skip source RPMs in the binary repo listing
+                if arch == "src":
                     elem.clear()
-    except (gzip.BadGzipFile, ET.ParseError, OSError) as e:
-        logger.error("Failed to parse primary.xml.gz: %s", e)
+                    continue
+
+                # Extract source RPM name
+                fmt_elem = elem.find(f"{{{COMMON_NS}}}format")
+                srpm_full = ""
+                if fmt_elem is not None:
+                    srpm_elem = fmt_elem.find(f"{{{RPM_NS}}}sourcerpm")
+                    if srpm_elem is not None and srpm_elem.text:
+                        srpm_full = srpm_elem.text
+
+                srpm_name = _parse_srpm_name(srpm_full) if srpm_full else rpm_name
+
+                # Extract provides
+                if fmt_elem is not None:
+                    provides_elem = fmt_elem.find(f"{{{RPM_NS}}}provides")
+                    if provides_elem is not None:
+                        for entry in provides_elem.findall(f"{{{RPM_NS}}}entry"):
+                            provide_name = entry.get("name", "")
+                            if _is_interesting_provide(provide_name, rpm_name):
+                                mappings.append({
+                                    "provide": provide_name,
+                                    "rpm_name": rpm_name,
+                                    "srpm_name": srpm_name,
+                                })
+
+                # Free memory
+                elem.clear()
+    except (ValueError, gzip.BadGzipFile, ET.ParseError, OSError) as e:
+        logger.error("Failed to parse primary: %s", e)
     finally:
+        if close_stream is not None:
+            close_stream()
         Path(tmp_path).unlink(missing_ok=True)
 
     logger.info("Extracted %d provide mappings", len(mappings))

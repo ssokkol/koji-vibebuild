@@ -56,8 +56,7 @@ ansible-galaxy install -r requirements.yml
 ### 3. Configuration
 
 ```bash
-# Configure inventory
-cp inventory/hosts.ini.example inventory/hosts.ini
+# Configure inventory (create or edit inventory/hosts.ini)
 vim inventory/hosts.ini
 
 # Specify server IP

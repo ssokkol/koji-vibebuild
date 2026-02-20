@@ -21,64 +21,95 @@ VibeBuild extends Koji functionality by adding automatic dependency resolution. 
 
 ### Installation
 
+From PyPI (when published):
+
 ```bash
 pip install vibebuild
+pip install vibebuild[ml]   # optional: ML-based name resolution
 ```
 
-With ML support (optional):
-
-```bash
-pip install vibebuild[ml]
-```
-
-Or from source:
+From source (recommended for development and verification):
 
 ```bash
 git clone https://github.com/vibebuild/vibebuild.git
 cd vibebuild
 pip install -e .
-# Optional: install ML dependencies
-pip install -e ".[ml]"
+pip install -e ".[ml]"     # optional: ML dependencies
+pip install -e ".[dev]"    # for tests: pytest, black, etc.
+pip install -e ".[dev,ml]" # both dev and ML
 ```
 
 ### Usage
 
+Basic form: `vibebuild [OPTIONS] TARGET SRPM`. SRPM can be a path to a `.src.rpm` file or a **package name** (e.g. `python3`); if it is a name, the SRPM is downloaded from Koji and then built.
+
 ```bash
-# Build package with automatic dependency resolution
+# One command: download SRPM by name and build (with dependency resolution)
+vibebuild fedora-43 python3
+vibebuild fedora-43 python-requests
+
+# Build from local SRPM file
 vibebuild fedora-target my-package-1.0-1.fc40.src.rpm
 
 # Scratch build (not tagged)
 vibebuild --scratch fedora-target my-package.src.rpm
 
-# Analyze dependencies without building
+# Build without resolving dependencies (single package only)
+vibebuild --no-deps fedora-target my-package.src.rpm
+
+# Analyze dependencies without building (one argument: path to SRPM)
 vibebuild --analyze-only my-package.src.rpm
 
-# Download SRPM from Fedora
+# Download SRPM from Fedora by package name (requires koji CLI)
 vibebuild --download-only python-requests
 
-# Dry run — show what would be built
+# Dry run — show build order and what would be built
 vibebuild --dry-run fedora-target my-package.src.rpm
 
-# Disable ML-based name resolution (use rules only)
-vibebuild --no-ml fedora-target my-package.src.rpm
-
-# Disable all name resolution (raw dependency names)
-vibebuild --no-name-resolution fedora-target my-package.src.rpm
-
-# Use custom ML model
+# Name resolution options
+vibebuild --no-ml fedora-target my-package.src.rpm              # rules only
+vibebuild --no-name-resolution fedora-target my-package.src.rpm # raw names
 vibebuild --ml-model /path/to/model.joblib fedora-target my-package.src.rpm
 ```
 
-### Using with your own Koji server
+For a step-by-step public demo (download, analyze, dry-run, build), see [DEMO.md](DEMO.md).
+
+### Verification
+
+After installation you can confirm everything works:
 
 ```bash
-vibebuild \
-  --server https://koji.example.com/kojihub \
-  --web-url https://koji.example.com/koji \
-  --cert ~/.koji/client.pem \
-  --serverca ~/.koji/serverca.crt \
-  --build-tag my-build \
-  my-target my-package.src.rpm
+vibebuild --version
+vibebuild --help          # short list of common options
+vibebuild --help-all      # full list of all options
+```
+
+If you installed with `[dev]`, run tests from the project root:
+
+```bash
+pytest
+```
+
+To verify dependency resolution on a real package (requires `koji` CLI and network access to Fedora Koji):
+
+```bash
+vibebuild --download-only python-requests
+vibebuild --analyze-only python-requests-*.src.rpm   # use the downloaded file
+vibebuild --dry-run fedora-43 python-requests         # package name: download then show plan
+vibebuild --dry-run fedora-43 python-requests-*.src.rpm
+```
+
+Without `koji`, use any existing `.src.rpm` you have for `--analyze-only` and `--dry-run`. See [TESTING.md](docs/TESTING.md) for running the test suite.
+
+### Using with your own Koji server
+
+If you use Koji already, `vibebuild` reads `~/.koji/config` (and `/etc/koji.conf`) for `server`, `weburl`, `cert`, and `serverca`, so you often only need to pass `--server` if overriding. For all options run `vibebuild --help-all`.
+
+```bash
+vibebuild --server https://koji.example.com/kojihub my-target my-package.src.rpm
+# or with explicit certs:
+vibebuild --server https://koji.example.com/kojihub --cert ~/.koji/client.pem \
+  --serverca ~/.koji/serverca.crt --build-tag my-build my-target my-package.src.rpm
 ```
 
 ## Koji Deployment
@@ -88,15 +119,17 @@ The repository includes an Ansible playbook for automatic Koji deployment on Fed
 ```bash
 cd ansible
 
-# Configure inventory
+# Configure inventory (set YOUR_VPS_IP and ansible_user)
 vim inventory/hosts.ini
 
-# Configure variables
+# Configure variables (FQDN, passwords, etc.)
 vim group_vars/all.yml
 
 # Run playbook
 ansible-playbook -i inventory/hosts.ini playbook.yml
 ```
+
+See [DEPLOYMENT.md](docs/DEPLOYMENT.md) for details.
 
 ## How It Works
 
@@ -150,27 +183,24 @@ VibeBuild includes scripts to train a custom ML model for package name resolutio
 # 1. Collect training data from Fedora repositories
 python scripts/collect_training_data.py --output data/training_data.json
 
-# 2. Train the model
+# 2. Train the model (alias data from vibebuild/data/alias_training.json is merged automatically)
 python scripts/train_model.py --input data/training_data.json --output vibebuild/data/model.joblib
 ```
 
-The model uses TF-IDF character n-grams with K-Nearest Neighbors to predict real package names from virtual dependency strings. See [DEPLOYMENT.md](docs/DEPLOYMENT.md) for details.
+The model uses TF-IDF character n-grams with K-Nearest Neighbors to predict real package names from virtual dependency strings. Training automatically merges aliases from `vibebuild/data/alias_training.json` (e.g. `python3` → `python3.12`), so that commands like `vibebuild --download-only python3` work when the model is installed. Use `--ml-model` to point to a custom model. See [DEPLOYMENT.md](docs/DEPLOYMENT.md) for details.
 
 ## Requirements
 
-- Python 3.9+
-- `koji` CLI (installed on system)
-- `rpm-build`, `rpm2cpio` (for working with SRPMs)
-- Access to Koji server
+- **Python** 3.9+
+- **koji** CLI — required for `--download-only` (downloading SRPMs from Fedora Koji) and for building. Without it, those features are unavailable. Install: `sudo dnf install koji` (Fedora) or equivalent on your distribution.
+- **rpm-build**, **rpm2cpio** (for unpacking and building SRPMs; on Fedora: `dnf install rpm-build`)
+- Access to a Koji server (e.g. Fedora Koji for download; your own for building)
 
-**Optional (for ML-based name resolution):**
-- `scikit-learn >= 1.3`
-- `joblib >= 1.3`
-
-Install with: `pip install vibebuild[ml]`
+**Optional (ML-based name resolution):** `scikit-learn >= 1.3`, `joblib >= 1.3` — install with `pip install vibebuild[ml]`.
 
 ## Documentation
 
+- [DEMO.md](DEMO.md) — step-by-step public demo (one-command build, download, analyze, dry-run)
 - [PROJECT_OVERVIEW.md](docs/PROJECT_OVERVIEW.md) — full project description with diagrams
 - [VPS_SETUP.md](docs/VPS_SETUP.md) — VPS server creation and setup guide
 - [ARCHITECTURE.md](docs/ARCHITECTURE.md) — system architecture

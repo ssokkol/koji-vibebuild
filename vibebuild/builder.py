@@ -280,7 +280,10 @@ class KojiBuilder:
 
         def srpm_resolver(pkg_name: str) -> Optional[str]:
             try:
-                return self.fetcher.download_srpm(pkg_name)
+                logger.info(f"Downloading dependency: {pkg_name}")
+                path = self.fetcher.download_srpm(pkg_name)
+                logger.info(f"Downloaded: {pkg_name} -> {path}")
+                return path
             except Exception as e:
                 logger.warning(f"Could not download SRPM for {pkg_name}: {e}")
                 return None

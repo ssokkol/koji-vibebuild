@@ -5,14 +5,20 @@ VibeBuild CLI - Koji extension for automatic dependency resolution.
 Usage:
     vibebuild [OPTIONS] TARGET SRPM
 
+    SRPM can be a path to a .src.rpm file or a package name (e.g. python3).
+    If a package name is given, the SRPM is downloaded from Koji and then built.
+
 Examples:
-    vibebuild fedora-target my-package.src.rpm
-    vibebuild --scratch fedora-target my-package.src.rpm
+    vibebuild fedora-43 python3
+    vibebuild fedora-43 my-package.src.rpm
+    vibebuild --scratch fedora-43 python-requests
     vibebuild --server https://my-koji/kojihub fedora-target pkg.src.rpm
 """
 
 import argparse
+import configparser
 import logging
+import os
 import sys
 from pathlib import Path
 from typing import Optional
@@ -22,7 +28,57 @@ from vibebuild.analyzer import get_package_info_from_srpm
 from vibebuild.builder import BuildResult, BuildStatus, KojiBuilder
 from vibebuild.exceptions import VibeBuildError
 from vibebuild.fetcher import SRPMFetcher
+from vibebuild.name_resolver import PackageNameResolver
 from vibebuild.resolver import DependencyResolver, KojiClient
+
+
+def load_koji_config() -> dict[str, Optional[str]]:
+    """Load server, weburl, cert, serverca from ~/.koji/config and /etc/koji.conf."""
+    out: dict[str, Optional[str]] = {
+        "server": None,
+        "web_url": None,
+        "cert": None,
+        "serverca": None,
+    }
+    config = configparser.ConfigParser()
+    for path in [
+        Path("/etc/koji.conf"),
+        Path.home() / ".koji" / "config",
+    ]:
+        if not path.exists():
+            continue
+        try:
+            config.read(path, encoding="utf-8")
+            if config.has_section("koji"):
+                s = config["koji"]
+                if s.get("server") and not out["server"]:
+                    out["server"] = s["server"].strip()
+                if s.get("weburl") and not out["web_url"]:
+                    out["web_url"] = s["weburl"].strip()
+                if s.get("cert") and not out["cert"]:
+                    out["cert"] = os.path.expanduser(s["cert"].strip())
+                if s.get("serverca") and not out["serverca"]:
+                    out["serverca"] = os.path.expanduser(s["serverca"].strip())
+        except (configparser.Error, OSError):
+            pass
+    return out
+
+
+def create_name_resolver(
+    no_ml: bool = False, ml_model_path: Optional[str] = None
+) -> PackageNameResolver:
+    """Create a PackageNameResolver with optional ML fallback."""
+    ml_resolver = None
+    if not no_ml:
+        try:
+            from vibebuild.ml_resolver import MLPackageResolver
+
+            ml_resolver = MLPackageResolver(model_path=ml_model_path)
+            if not ml_resolver.is_available():
+                ml_resolver = None
+        except ImportError:
+            ml_resolver = None
+    return PackageNameResolver(ml_resolver=ml_resolver)
 
 
 def setup_logging(verbose: bool = False, quiet: bool = False) -> None:
@@ -39,9 +95,41 @@ def setup_logging(verbose: bool = False, quiet: bool = False) -> None:
     )
 
 
+class _HelpAllArgumentParser(argparse.ArgumentParser):
+    """Parser that shows short help by default and full help with --help-all."""
+
+    def format_help(self) -> str:
+        if "--help-all" in sys.argv:
+            return super().format_help()
+        usage = self.format_usage()
+        short = (
+            f"{self.description}\n\n"
+            "usage: vibebuild [-h] [--help-all] [-v] [-q] [--analyze-only | --download-only | --dry-run]\n"
+            "                 [--scratch] [--no-deps] [--server URL]\n"
+            "                 [target] [srpm]\n\n"
+            "  srpm  Path to .src.rpm or package name (e.g. python3); if name, download then build.\n\n"
+            "Modes:\n"
+            "  --analyze-only     Only analyze dependencies, do not build\n"
+            "  --download-only    Only download SRPM, do not build\n"
+            "  --dry-run          Show what would be built without actually building\n\n"
+            "Common options:\n"
+            "  -v, --verbose      Enable verbose output\n"
+            "  -q, --quiet        Suppress non-error output\n"
+            "  --scratch          Perform scratch build (not tagged)\n"
+            "  --no-deps          Skip dependency resolution, just build the package\n"
+            "  --server URL       Koji hub URL (default: from ~/.koji/config or Fedora Koji)\n\n"
+            "Full list of options: vibebuild --help-all\n"
+        )
+        return short
+
+
 def create_parser() -> argparse.ArgumentParser:
     """Create argument parser."""
-    parser = argparse.ArgumentParser(
+    koji_cfg = load_koji_config()
+    default_server = koji_cfg.get("server") or "https://koji.fedoraproject.org/kojihub"
+    default_web_url = koji_cfg.get("web_url") or "https://koji.fedoraproject.org/koji"
+
+    parser = _HelpAllArgumentParser(
         prog="vibebuild",
         description="Koji build with automatic dependency resolution",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -65,6 +153,11 @@ Examples:
     )
 
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
+    parser.add_argument(
+        "--help-all",
+        action="store_true",
+        help="Show all options (default help shows only common ones)",
+    )
 
     parser.add_argument("-v", "--verbose", action="store_true", help="Enable verbose output")
 
@@ -75,21 +168,29 @@ Examples:
     koji_group.add_argument(
         "--server",
         metavar="URL",
-        default="https://koji.fedoraproject.org/kojihub",
-        help="Koji hub URL (default: Fedora Koji)",
+        default=default_server,
+        help="Koji hub URL (default: from ~/.koji/config or Fedora Koji)",
     )
 
     koji_group.add_argument(
         "--web-url",
         metavar="URL",
-        default="https://koji.fedoraproject.org/koji",
-        help="Koji web URL",
+        default=default_web_url,
+        help="Koji web URL (default: from ~/.koji/config or Fedora)",
     )
 
-    koji_group.add_argument("--cert", metavar="FILE", help="Client certificate for authentication")
+    koji_group.add_argument(
+        "--cert",
+        metavar="FILE",
+        default=koji_cfg.get("cert"),
+        help="Client certificate for authentication (default: from ~/.koji/config)",
+    )
 
     koji_group.add_argument(
-        "--serverca", metavar="FILE", help="CA certificate for server verification"
+        "--serverca",
+        metavar="FILE",
+        default=koji_cfg.get("serverca"),
+        help="CA certificate for server verification (default: from ~/.koji/config)",
     )
 
     koji_group.add_argument(
@@ -152,7 +253,9 @@ Examples:
     parser.add_argument("target", nargs="?", help="Build target (e.g., fedora-target)")
 
     parser.add_argument(
-        "srpm", nargs="?", help="Path to SRPM file or package name (with --download-only)"
+        "srpm",
+        nargs="?",
+        help="Path to .src.rpm file or package name (e.g. python3); if name, SRPM is downloaded then built",
     )
 
     return parser
@@ -248,14 +351,50 @@ def cmd_analyze(
         return 1
 
 
+def ensure_srpm_path(
+    srpm_arg: str,
+    download_dir: Optional[str],
+    no_ssl_verify: bool,
+    no_ml: bool,
+    ml_model_path: Optional[str],
+) -> str:
+    """
+    Return path to an SRPM file. If srpm_arg is an existing path, return it.
+    Otherwise treat as package name, download SRPM, and return its path.
+    """
+    p = Path(srpm_arg)
+    if p.exists():
+        return str(p.resolve())
+    # Package name: download first
+    logging.info("Downloading SRPM for: %s", srpm_arg)
+    name_resolver = create_name_resolver(no_ml=no_ml, ml_model_path=ml_model_path)
+    fetcher = SRPMFetcher(
+        download_dir=download_dir,
+        no_ssl_verify=no_ssl_verify,
+        name_resolver=name_resolver,
+    )
+    path = fetcher.download_srpm(srpm_arg)
+    logging.info("Downloaded: %s", path)
+    return path
+
+
 def cmd_download(
-    package_name: str, download_dir: Optional[str], no_ssl_verify: bool = False
+    package_name: str,
+    download_dir: Optional[str],
+    no_ssl_verify: bool = False,
+    no_ml: bool = False,
+    ml_model_path: Optional[str] = None,
 ) -> int:
     """Download SRPM from Fedora."""
     print(f"Downloading SRPM for: {package_name}")
 
     try:
-        fetcher = SRPMFetcher(download_dir=download_dir, no_ssl_verify=no_ssl_verify)
+        name_resolver = create_name_resolver(no_ml=no_ml, ml_model_path=ml_model_path)
+        fetcher = SRPMFetcher(
+            download_dir=download_dir,
+            no_ssl_verify=no_ssl_verify,
+            name_resolver=name_resolver,
+        )
         srpm_path = fetcher.download_srpm(package_name)
 
         print(f"✓ Downloaded: {srpm_path}")
@@ -364,6 +503,10 @@ def main(args: Optional[list[str]] = None) -> int:
     parser = create_parser()
     opts = parser.parse_args(args)
 
+    if getattr(opts, "help_all", False):
+        print(parser.format_help())
+        return 0
+
     setup_logging(opts.verbose, opts.quiet)
 
     if opts.analyze_only:
@@ -378,14 +521,32 @@ def main(args: Optional[list[str]] = None) -> int:
         package_name = opts.srpm or opts.target
         if not package_name:
             parser.error("--download-only requires package name")
-        return cmd_download(package_name, opts.download_dir, opts.no_ssl_verify)
+        return cmd_download(
+            package_name,
+            opts.download_dir,
+            opts.no_ssl_verify,
+            no_ml=getattr(opts, "no_ml", False),
+            ml_model_path=getattr(opts, "ml_model", None),
+        )
 
     if not opts.target or not opts.srpm:
-        parser.error("TARGET and SRPM are required for building")
+        parser.error("TARGET and SRPM (or package name) are required for building")
+
+    try:
+        srpm_path = ensure_srpm_path(
+            opts.srpm,
+            opts.download_dir,
+            opts.no_ssl_verify,
+            getattr(opts, "no_ml", False),
+            getattr(opts, "ml_model", None),
+        )
+    except Exception as e:
+        logging.error("Download failed: %s", e)
+        return 1
 
     return cmd_build(
         target=opts.target,
-        srpm_path=opts.srpm,
+        srpm_path=srpm_path,
         server=opts.server,
         web_url=opts.web_url,
         cert=opts.cert,

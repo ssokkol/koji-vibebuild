@@ -4,7 +4,9 @@ Train the ML package name resolver model.
 
 Takes collected training data (JSON) and produces a trained model (joblib)
 that can be used by MLPackageResolver to predict RPM package names from
-dependency strings.
+dependency strings. Data from vibebuild/data/alias_training.json (e.g. python3
+-> python3.12) is merged automatically so that vibebuild --download-only python3
+works with the trained model.
 
 Usage:
     python scripts/train_model.py --input training_data.json
@@ -50,6 +52,15 @@ def load_training_data(path: str) -> list[dict]:
 
     if not isinstance(data, list):
         raise ValueError("Training data must be a JSON array")
+
+    # Merge alias training data (e.g. python3 -> python3.12) if present
+    alias_path = PROJECT_ROOT / "vibebuild" / "data" / "alias_training.json"
+    if alias_path.exists():
+        with open(alias_path, "r", encoding="utf-8") as f:
+            aliases = json.load(f)
+        if isinstance(aliases, list):
+            data = data + aliases
+            logger.info("Merged %d alias entries from %s", len(aliases), alias_path.name)
 
     # Validate entries
     required_keys = {"provide", "rpm_name", "srpm_name"}
@@ -125,6 +136,11 @@ def main() -> None:
         default=0.1,
         help="Fraction of data to hold out for testing (default: 0.1)",
     )
+    parser.add_argument(
+        "--skip-eval",
+        action="store_true",
+        help="Skip evaluation on test set (faster; model is still saved)",
+    )
     args = parser.parse_args()
 
     # Load data
@@ -177,7 +193,7 @@ def main() -> None:
     logger.info("Unique SRPMs:    %d", len(set(resolver._srpm_names)))
 
     # Evaluate on test set
-    if test_data:
+    if test_data and not args.skip_eval:
         logger.info("--- Evaluation on test set ---")
         metrics = evaluate_model(resolver, test_data)
         logger.info("Test samples:    %d", metrics["total"])

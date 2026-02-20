@@ -93,15 +93,13 @@ class SRPMFetcher:
         Raises:
             SRPMNotFoundError: If SRPM cannot be found in any source
         """
-        # Get SRPM name variants to try
-        names_to_try = [package_name]
+        # Get SRPM name variants to try (ML + rule-based via resolver, or just the name)
         if self.name_resolver:
-            srpm_names = self.name_resolver.resolve_srpm_name(package_name)
-            names_to_try = srpm_names + [package_name]
-            # Deduplicate while preserving order
-            seen: set[str] = set()
-            names_to_try = [n for n in names_to_try if not (n in seen or seen.add(n))]
+            names_to_try = self.name_resolver.get_download_candidates(package_name)
+        else:
+            names_to_try = [package_name]
 
+        last_errors: list[str] = []
         for name in names_to_try:
             cache_key = f"{name}-{version or 'latest'}"
             if cache_key in self._cache:
@@ -125,16 +123,35 @@ class SRPMFetcher:
                     errors.append(f"{source.name}: {str(e)}")
                     continue
 
-        raise SRPMNotFoundError(
-            f"Could not find SRPM for {package_name} (tried: {names_to_try})"
-        )
+            last_errors = errors
+
+        msg = f"Could not find SRPM for {package_name} (tried: {names_to_try})"
+        if last_errors:
+            msg += "\n" + "\n".join(f"  {e}" for e in last_errors)
+        raise SRPMNotFoundError(msg)
 
     def _download_from_koji(
         self, package_name: str, version: Optional[str], source: SRPMSource
     ) -> str:
         """Download SRPM using koji CLI."""
-        cmd = ["koji", f"--server={source.koji_server}"]
         env = self._get_env()
+        try:
+            return self._download_from_koji_impl(package_name, version, source, env)
+        except FileNotFoundError as e:
+            raise SRPMNotFoundError(
+                "koji CLI not found. Install it to download SRPMs: "
+                "dnf install koji (Fedora) or equivalent."
+            ) from e
+
+    def _download_from_koji_impl(
+        self,
+        package_name: str,
+        version: Optional[str],
+        source: SRPMSource,
+        env: Optional[dict],
+    ) -> str:
+        """Actual Koji download logic (may raise FileNotFoundError if koji missing)."""
+        cmd = ["koji", f"--server={source.koji_server}"]
 
         if version:
             cmd.extend(["download-build", "--arch=src", f"{package_name}-{version}"])

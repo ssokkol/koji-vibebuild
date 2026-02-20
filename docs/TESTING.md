@@ -67,6 +67,19 @@ pytest -m unit
 pytest -m integration
 ```
 
+### Manual / E2E verification (optional)
+
+With `koji` CLI and network access to Fedora Koji you can verify the full flow:
+
+```bash
+vibebuild --version
+vibebuild --help
+vibebuild --download-only python-requests
+vibebuild --dry-run fedora-43 python-requests   # package name: download then show build plan
+```
+
+For a full public-demo script (one-command build by package name, analyze, dry-run, build), see [DEMO.md](../DEMO.md).
+
 ---
 
 ## Test Structure

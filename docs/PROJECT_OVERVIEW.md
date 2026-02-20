@@ -54,7 +54,7 @@
 | Развернуть VPS, поставить Koji | Ansible-плейбук в `ansible/` для автоматического деплоя |
 | SRPM Source / RPM Binary | Analyzer (`analyzer.py`) работает с SRPM (Source RPM), Builder (`builder.py`) создает RPM (Binary) через Koji |
 | `KOJI BUILD [NAME PACK]` | Поддержка через `vibebuild --no-deps TARGET SRPM` (прямая сборка без разрешения зависимостей) |
-| `KOJI VIBEBUILD [PACKAGENAME]` | Основная команда `vibebuild TARGET SRPM` -- сборка с автоматическим разрешением зависимостей |
+| `KOJI VIBEBUILD [PACKAGENAME]` | Основная команда `vibebuild TARGET SRPM`: SRPM — путь к .src.rpm или имя пакета (тогда скачивание из Koji и сборка с разрешением зависимостей) |
 | Подгрузка зависимостей | Fetcher (`fetcher.py`) скачивает SRPM из Fedora Koji и src.fedoraproject.org |
 | BUILD других зависимостей | Builder (`builder.py`) собирает зависимости по уровням DAG перед сборкой основного пакета |
 
@@ -404,13 +404,13 @@ flowchart LR
 
 **Обучение:**
 
-1. **Сбор данных** (`scripts/collect_training_data.py`): парсинг `primary.xml.gz` из репозиториев Fedora, извлечение маппингов provides -> package name (~50,000-100,000 записей)
+1. **Сбор данных** (`scripts/collect_training_data.py`): парсинг primary.xml (gzip/zstd) из репозиториев Fedora, извлечение маппингов provides -> package name (~400k записей)
 2. **Обучение** (`scripts/train_model.py`): TF-IDF + KNN, оценка на тестовой выборке
 3. **Модель** сохраняется в `vibebuild/data/model.joblib` (~5-15 MB)
 
 ```bash
-# Полный цикл обучения
-python scripts/collect_training_data.py --output data/training_data.json --release 40
+# Полный цикл обучения (release 43 для Fedora 43)
+python scripts/collect_training_data.py --output data/training_data.json --release 43 --arch x86_64
 python scripts/train_model.py --input data/training_data.json --output vibebuild/data/model.joblib
 ```
 
@@ -778,10 +778,16 @@ graph TB
 
 ## CLI -- командный интерфейс
 
+Вместо пути к SRPM можно передать **имя пакета**: vibebuild скачает SRPM из Koji и запустит сборку (с разрешением зависимостей).
+
 ### Основные команды
 
 ```bash
-# Сборка с автоматическим разрешением зависимостей
+# Одна команда: скачать SRPM по имени и собрать (Fedora 43)
+vibebuild fedora-43 python3
+vibebuild fedora-43 python-requests
+
+# Сборка по пути к файлу
 vibebuild fedora-target my-package-1.0-1.fc40.src.rpm
 
 # Scratch-сборка (без тегирования)
@@ -793,7 +799,8 @@ vibebuild --analyze-only my-package.src.rpm
 # Скачивание SRPM из Fedora
 vibebuild --download-only python-requests
 
-# Dry run -- показать план сборки
+# Dry run -- показать план сборки (srpm: путь или имя пакета)
+vibebuild --dry-run fedora-43 python-requests
 vibebuild --dry-run fedora-target my-package.src.rpm
 
 # Сборка без разрешения зависимостей (аналог koji build)
@@ -825,7 +832,7 @@ vibebuild \
 
 | Режим | Флаг | Описание |
 |---|---|---|
-| Полная сборка | _(по умолчанию)_ | Анализ + разрешение зависимостей + сборка всего |
+| Полная сборка | _(по умолчанию)_ | Если SRPM — имя пакета: скачивание из Koji, затем анализ + разрешение зависимостей + сборка всего |
 | Без зависимостей | `--no-deps` | Аналог стандартного `koji build` |
 | Только анализ | `--analyze-only` | Показать зависимости и их доступность |
 | Только скачивание | `--download-only` | Скачать SRPM из Fedora |

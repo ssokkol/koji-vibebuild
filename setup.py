@@ -38,6 +38,10 @@ setup(
         "requests>=2.25.0",
     ],
     extras_require={
+        "ml": [
+            "scikit-learn>=1.3",
+            "joblib>=1.3",
+        ],
         "dev": [
             "pytest>=7.0",
             "pytest-cov>=4.0",

@@ -145,12 +145,18 @@ class PackageNameResolver:
         if self.ml_resolver and "(" in expanded:
             try:
                 ml_result = self.ml_resolver.predict(expanded)
-                if ml_result and ml_result != expanded:
-                    logger.debug(f"ML resolved '{expanded}' -> '{ml_result}'")
-                    self._cache[dep_name] = ml_result
-                    return ml_result
+                if ml_result:
+                    rpm_name = (
+                        ml_result.get("rpm_name", expanded)
+                        if isinstance(ml_result, dict)
+                        else ml_result
+                    )
+                    if rpm_name != expanded:
+                        logger.debug("ML resolved '%s' -> '%s'", expanded, rpm_name)
+                        self._cache[dep_name] = rpm_name
+                        return rpm_name
             except Exception as e:
-                logger.debug(f"ML resolver failed for '{expanded}': {e}")
+                logger.debug("ML resolver failed for '%s': %s", expanded, e)
 
         # Step 4: Return expanded name as-is
         self._cache[dep_name] = expanded
@@ -274,3 +280,60 @@ class PackageNameResolver:
                 result.append(name)
 
         return result
+
+    def get_download_candidates(self, name: str) -> list[str]:
+        """
+        Return a list of package names to try when downloading an SRPM.
+
+        Used for both aliases (e.g. python3 -> python3.12) and virtual provides.
+        Order: ML prediction (srpm_name, rpm_name), rule-based resolve, resolve_srpm_name variants, then name.
+
+        Args:
+            name: Package name or alias (e.g. "python3", "python3dist(requests)")
+
+        Returns:
+            List of names to try, deduplicated and ordered by likelihood.
+        """
+        seen: set[str] = set()
+        candidates: list[str] = []
+
+        # 1. ML prediction (for aliases like python3 and virtual provides)
+        if self.ml_resolver:
+            try:
+                ml_result = self.ml_resolver.predict(name)
+                if ml_result and isinstance(ml_result, dict):
+                    srpm = ml_result.get("srpm_name")
+                    rpm = ml_result.get("rpm_name")
+                    if srpm and srpm not in seen:
+                        seen.add(srpm)
+                        candidates.append(srpm)
+                    if rpm and rpm not in seen:
+                        seen.add(rpm)
+                        candidates.append(rpm)
+            except Exception:
+                pass
+
+        # 2. Rule-based resolve (virtual provides)
+        resolved = self.resolve(name)
+        if resolved and resolved not in seen:
+            seen.add(resolved)
+            candidates.append(resolved)
+
+        # 3. SRPM name variants for the given name
+        for n in self.resolve_srpm_name(name):
+            if n not in seen:
+                seen.add(n)
+                candidates.append(n)
+
+        # 4. SRPM name variants for the rule-resolved name (if different)
+        if resolved and resolved != name:
+            for n in self.resolve_srpm_name(resolved):
+                if n not in seen:
+                    seen.add(n)
+                    candidates.append(n)
+
+        # 5. Original name
+        if name not in seen:
+            candidates.append(name)
+
+        return candidates
