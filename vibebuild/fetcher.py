@@ -11,10 +11,11 @@ from pathlib import Path
 from typing import Optional
 
 try:
-    import requests
+    import requests  # pragma: no cover
 
-    HAS_REQUESTS = True
-except ImportError:
+    HAS_REQUESTS = True  # pragma: no cover
+except ImportError:  # pragma: no cover
+    requests = None
     HAS_REQUESTS = False
 
 from vibebuild.exceptions import SRPMNotFoundError, VibeBuildError

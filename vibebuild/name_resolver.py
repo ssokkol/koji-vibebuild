@@ -18,7 +18,7 @@ try:
     from vibebuild.ml_resolver import MLPackageResolver
 
     HAS_ML = True
-except ImportError:
+except ImportError:  # pragma: no cover
     HAS_ML = False
 
 # Known RPM system macros for expanding %{...} in dependency names
@@ -182,14 +182,14 @@ class PackageNameResolver:
             # Handle conditional macros like %{?python3_pkgversion}
             if macro_expr.startswith("?"):
                 macro_name = macro_expr[1:]
+                # Handle macros with default values like %{?macro:default}
+                if ":" in macro_name:
+                    parts = macro_name.split(":", 1)
+                    macro_name = parts[0]
+                    default = parts[1]
+                    return SYSTEM_MACROS.get(macro_name, default)
                 # Conditional: if defined, expand; otherwise empty string
                 return SYSTEM_MACROS.get(macro_name, "")
-            # Handle macros with default values like %{?macro:default}
-            if ":" in macro_expr and macro_expr.startswith("?"):
-                parts = macro_expr[1:].split(":", 1)
-                macro_name = parts[0]
-                default = parts[1] if len(parts) > 1 else ""
-                return SYSTEM_MACROS.get(macro_name, default)
             return SYSTEM_MACROS.get(macro_expr, match.group(0))
 
         return _MACRO_PATTERN.sub(replace_macro, name)
@@ -271,11 +271,11 @@ class PackageNameResolver:
         else:
             candidates.append(rpm_name)
 
-        # Deduplicate while preserving order
+        # Deduplicate while preserving order (insurance for future patterns)
         seen: set[str] = set()
         result: list[str] = []
         for name in candidates:
-            if name not in seen:
+            if name not in seen:  # pragma: no branch
                 seen.add(name)
                 result.append(name)
 
@@ -332,8 +332,8 @@ class PackageNameResolver:
                     seen.add(n)
                     candidates.append(n)
 
-        # 5. Original name
-        if name not in seen:
+        # 5. Original name (safety net; resolve() always adds name to candidates)
+        if name not in seen:  # pragma: no cover
             candidates.append(name)
 
         return candidates

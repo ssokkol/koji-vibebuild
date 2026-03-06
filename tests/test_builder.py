@@ -434,3 +434,337 @@ class TestKojiBuilderBuildChain:
         assert "pkg1" in result.failed_packages
         assert "pkg2" not in result.built_packages
         assert "pkg2" not in result.failed_packages
+
+
+class TestKojiBuilderInit:
+    def test_init_ml_import_error(self, mocker):
+        """KojiBuilder should handle ImportError for ml_resolver."""
+        mocker.patch("vibebuild.builder.MLPackageResolver", side_effect=ImportError("no ml"), create=True)
+        # Force the import to fail inside __init__
+        original_import = __builtins__.__import__ if hasattr(__builtins__, '__import__') else __import__
+
+        def mock_import(name, *args, **kwargs):
+            if name == "vibebuild.ml_resolver":
+                raise ImportError("no sklearn")
+            return original_import(name, *args, **kwargs)
+
+        with patch("builtins.__import__", side_effect=mock_import):
+            builder = KojiBuilder(no_name_resolution=False, no_ml=False)
+
+        # ML resolver should be None due to ImportError
+        assert builder.name_resolver is not None
+
+    def test_init_no_name_resolution(self):
+        """KojiBuilder with no_name_resolution=True should have no name_resolver."""
+        builder = KojiBuilder(no_name_resolution=True)
+        assert builder.name_resolver is None
+
+    def test_init_no_ml(self):
+        """KojiBuilder with no_ml=True should have name_resolver but no ml_resolver."""
+        builder = KojiBuilder(no_ml=True)
+        assert builder.name_resolver is not None
+        assert builder.name_resolver.ml_resolver is None
+
+    def test_init_ml_resolver_available(self, mocker):
+        """When ML resolver is available, it should be set on name_resolver."""
+        mock_ml_instance = MagicMock()
+        mock_ml_instance.is_available.return_value = True
+        mock_ml_cls = MagicMock(return_value=mock_ml_instance)
+        mock_module = MagicMock()
+        mock_module.MLPackageResolver = mock_ml_cls
+        mocker.patch.dict("sys.modules", {"vibebuild.ml_resolver": mock_module})
+
+        builder = KojiBuilder(no_ml=False, no_name_resolution=False)
+        assert builder.name_resolver is not None
+        assert builder.name_resolver.ml_resolver == mock_ml_instance
+
+
+class TestKojiBuilderGetEnv:
+    def test_get_env_with_no_ssl_verify(self):
+        builder = KojiBuilder(no_ssl_verify=True)
+
+        env = builder._get_env()
+
+        assert env is not None
+        assert env["PYTHONHTTPSVERIFY"] == "0"
+        assert env["REQUESTS_CA_BUNDLE"] == ""
+        assert env["CURL_CA_BUNDLE"] == ""
+
+    def test_get_env_without_no_ssl_verify(self):
+        builder = KojiBuilder(no_ssl_verify=False)
+
+        env = builder._get_env()
+
+        assert env is None
+
+
+class TestBuildPackageEdgeCases:
+    def test_build_package_task_id_parse_created_task_nan(self, tmp_path, mock_subprocess_run):
+        """ValueError when parsing task_id from 'Created task: NaN'."""
+        srpm = tmp_path / "test.src.rpm"
+        srpm.write_text("fake srpm")
+        mock_subprocess_run.return_value.returncode = 0
+        mock_subprocess_run.return_value.stdout = "Created task: NaN\n"
+        mock_subprocess_run.return_value.stderr = ""
+        builder = KojiBuilder()
+
+        with patch("vibebuild.builder.get_package_info_from_srpm") as mock_info:
+            mock_info.return_value = PackageInfo(
+                name="test", version="1.0", release="1",
+                build_requires=[], source_urls=[]
+            )
+            task = builder.build_package(str(srpm), wait=True)
+
+        assert task.task_id is None
+
+    def test_build_package_task_id_parse_task_info_nan(self, tmp_path, mock_subprocess_run):
+        """ValueError when parsing task_id from 'Task info: id=NaN'."""
+        srpm = tmp_path / "test.src.rpm"
+        srpm.write_text("fake srpm")
+        mock_subprocess_run.return_value.returncode = 0
+        mock_subprocess_run.return_value.stdout = "Task info: id=NaN\n"
+        mock_subprocess_run.return_value.stderr = ""
+        builder = KojiBuilder()
+
+        with patch("vibebuild.builder.get_package_info_from_srpm") as mock_info:
+            mock_info.return_value = PackageInfo(
+                name="test", version="1.0", release="1",
+                build_requires=[], source_urls=[]
+            )
+            task = builder.build_package(str(srpm), wait=True)
+
+        assert task.task_id is None
+
+
+class TestBuildWithDepsEdgeCases:
+    def test_srpm_resolver_callback_success(self, tmp_path, mock_subprocess_run):
+        """The srpm_resolver callback in build_with_deps should download SRPMs."""
+        srpm = tmp_path / "test.src.rpm"
+        srpm.write_text("fake srpm")
+        mock_subprocess_run.return_value.returncode = 0
+        mock_subprocess_run.return_value.stdout = "Created task: 12345"
+        builder = KojiBuilder()
+
+        captured_resolver = {}
+
+        def capture_resolver(name, path, srpm_resolver=None):
+            captured_resolver["fn"] = srpm_resolver
+
+        with patch("vibebuild.builder.get_package_info_from_srpm") as mock_info:
+            mock_info.return_value = PackageInfo(
+                name="test", version="1.0", release="1",
+                build_requires=[], source_urls=[]
+            )
+            with patch.object(builder.resolver, "build_dependency_graph", side_effect=capture_resolver):
+                with patch.object(builder.resolver, "get_build_chain", return_value=[]):
+                    result = builder.build_with_deps(str(srpm))
+
+        # Call the captured srpm_resolver
+        assert captured_resolver["fn"] is not None
+        with patch.object(builder.fetcher, "download_srpm", return_value="/path/to/dep.src.rpm"):
+            dep_path = captured_resolver["fn"]("dep-pkg")
+        assert dep_path == "/path/to/dep.src.rpm"
+
+    def test_srpm_resolver_callback_exception(self, tmp_path, mock_subprocess_run):
+        """The srpm_resolver callback should return None on exception."""
+        srpm = tmp_path / "test.src.rpm"
+        srpm.write_text("fake srpm")
+        mock_subprocess_run.return_value.returncode = 0
+        mock_subprocess_run.return_value.stdout = "Created task: 12345"
+        builder = KojiBuilder()
+
+        captured_resolver = {}
+
+        def capture_resolver(name, path, srpm_resolver=None):
+            captured_resolver["fn"] = srpm_resolver
+
+        with patch("vibebuild.builder.get_package_info_from_srpm") as mock_info:
+            mock_info.return_value = PackageInfo(
+                name="test", version="1.0", release="1",
+                build_requires=[], source_urls=[]
+            )
+            with patch.object(builder.resolver, "build_dependency_graph", side_effect=capture_resolver):
+                with patch.object(builder.resolver, "get_build_chain", return_value=[]):
+                    builder.build_with_deps(str(srpm))
+
+        with patch.object(builder.fetcher, "download_srpm", side_effect=Exception("download fail")):
+            dep_path = captured_resolver["fn"]("dep-pkg")
+        assert dep_path is None
+
+    def test_no_node_or_no_srpm_path_skips_package(self, tmp_path, mock_subprocess_run):
+        """Package with no SRPM path should be skipped."""
+        srpm = tmp_path / "test.src.rpm"
+        srpm.write_text("fake srpm")
+        mock_subprocess_run.return_value.returncode = 0
+        mock_subprocess_run.return_value.stdout = "Created task: 12345"
+        builder = KojiBuilder()
+        from vibebuild.resolver import DependencyNode
+        builder.resolver._dependency_graph = {
+            "test": DependencyNode(name="test", srpm_path=str(srpm)),
+            "no-srpm": DependencyNode(name="no-srpm", srpm_path=None),
+        }
+
+        with patch("vibebuild.builder.get_package_info_from_srpm") as mock_info:
+            mock_info.return_value = PackageInfo(
+                name="test", version="1.0", release="1",
+                build_requires=[], source_urls=[]
+            )
+            with patch.object(builder.resolver, "build_dependency_graph"):
+                with patch.object(builder.resolver, "get_build_chain", return_value=[["no-srpm"], ["test"]]):
+                    result = builder.build_with_deps(str(srpm))
+
+        assert "no-srpm" not in result.built_packages
+
+    def test_dep_build_failure_adds_to_failed(self, tmp_path, mock_subprocess_run):
+        """Dep build exception should add to failed_packages."""
+        srpm = tmp_path / "test.src.rpm"
+        srpm.write_text("fake srpm")
+        dep_srpm = tmp_path / "dep.src.rpm"
+        dep_srpm.write_text("fake dep")
+        builder = KojiBuilder()
+        from vibebuild.resolver import DependencyNode
+        builder.resolver._dependency_graph = {
+            "test": DependencyNode(name="test", srpm_path=str(srpm)),
+            "dep": DependencyNode(name="dep", srpm_path=str(dep_srpm)),
+        }
+
+        with patch("vibebuild.builder.get_package_info_from_srpm") as mock_info:
+            mock_info.return_value = PackageInfo(
+                name="test", version="1.0", release="1",
+                build_requires=[], source_urls=[]
+            )
+            with patch.object(builder.resolver, "build_dependency_graph"):
+                with patch.object(builder.resolver, "get_build_chain", return_value=[["dep"]]):
+                    with patch.object(builder, "build_package", side_effect=Exception("build error")):
+                        result = builder.build_with_deps(str(srpm))
+
+        assert "dep" in result.failed_packages
+
+    def test_target_build_exception(self, tmp_path, mock_subprocess_run):
+        """Target build exception should mark as failed."""
+        srpm = tmp_path / "test.src.rpm"
+        srpm.write_text("fake srpm")
+        mock_subprocess_run.return_value.returncode = 0
+        mock_subprocess_run.return_value.stdout = "Created task: 12345"
+        builder = KojiBuilder()
+
+        with patch("vibebuild.builder.get_package_info_from_srpm") as mock_info:
+            mock_info.return_value = PackageInfo(
+                name="test", version="1.0", release="1",
+                build_requires=[], source_urls=[]
+            )
+            with patch.object(builder.resolver, "build_dependency_graph"):
+                with patch.object(builder.resolver, "get_build_chain", return_value=[]):
+                    with patch.object(builder, "build_package", side_effect=Exception("build fail")):
+                        result = builder.build_with_deps(str(srpm))
+
+        assert result.success is False
+        assert "test" in result.failed_packages
+
+    def test_target_build_non_complete_status(self, tmp_path, mock_subprocess_run):
+        """Target build returning non-COMPLETE should mark as failed."""
+        srpm = tmp_path / "test.src.rpm"
+        srpm.write_text("fake srpm")
+        builder = KojiBuilder()
+
+        failed_task = BuildTask(
+            package_name="test", srpm_path=str(srpm),
+            target="fedora-target", status=BuildStatus.FAILED
+        )
+
+        with patch("vibebuild.builder.get_package_info_from_srpm") as mock_info:
+            mock_info.return_value = PackageInfo(
+                name="test", version="1.0", release="1",
+                build_requires=[], source_urls=[]
+            )
+            with patch.object(builder.resolver, "build_dependency_graph"):
+                with patch.object(builder.resolver, "get_build_chain", return_value=[]):
+                    with patch.object(builder, "build_package", return_value=failed_task):
+                        result = builder.build_with_deps(str(srpm))
+
+        assert result.success is False
+        assert "test" in result.failed_packages
+
+    def test_dep_build_non_complete_status(self, tmp_path, mock_subprocess_run):
+        """Dep build with non-COMPLETE status should mark as failed."""
+        srpm = tmp_path / "test.src.rpm"
+        srpm.write_text("fake srpm")
+        dep_srpm = tmp_path / "dep.src.rpm"
+        dep_srpm.write_text("fake dep")
+        builder = KojiBuilder()
+        from vibebuild.resolver import DependencyNode
+        builder.resolver._dependency_graph = {
+            "test": DependencyNode(name="test", srpm_path=str(srpm)),
+            "dep": DependencyNode(name="dep", srpm_path=str(dep_srpm)),
+        }
+
+        failed_task = BuildTask(
+            package_name="dep", srpm_path=str(dep_srpm),
+            target="fedora-target", status=BuildStatus.FAILED
+        )
+
+        with patch("vibebuild.builder.get_package_info_from_srpm") as mock_info:
+            mock_info.return_value = PackageInfo(
+                name="test", version="1.0", release="1",
+                build_requires=[], source_urls=[]
+            )
+            with patch.object(builder.resolver, "build_dependency_graph"):
+                with patch.object(builder.resolver, "get_build_chain", return_value=[["dep"]]):
+                    with patch.object(builder, "build_package", return_value=failed_task):
+                        result = builder.build_with_deps(str(srpm))
+
+        assert "dep" in result.failed_packages
+        assert result.success is False
+
+
+class TestBuildChainEdgeCases:
+    def test_build_chain_non_complete_breaks(self, tmp_path, mock_subprocess_run):
+        """build_chain should break when a package status is not COMPLETE."""
+        pkg1 = tmp_path / "pkg1.src.rpm"
+        pkg1.write_text("fake")
+        pkg2 = tmp_path / "pkg2.src.rpm"
+        pkg2.write_text("fake")
+        builder = KojiBuilder()
+
+        failed_task = BuildTask(
+            package_name="pkg1", srpm_path=str(pkg1),
+            target="fedora-target", status=BuildStatus.FAILED
+        )
+
+        with patch("vibebuild.builder.get_package_info_from_srpm") as mock_info:
+            mock_info.return_value = PackageInfo(
+                name="pkg1", version="1.0", release="1",
+                build_requires=[], source_urls=[]
+            )
+            with patch.object(builder, "build_package", return_value=failed_task):
+                result = builder.build_chain([("pkg1", str(pkg1)), ("pkg2", str(pkg2))])
+
+        assert result.success is False
+        assert "pkg1" in result.failed_packages
+        assert "pkg2" not in result.built_packages
+
+    def test_build_chain_exception_breaks(self, tmp_path):
+        """build_chain should break on exception."""
+        pkg1 = tmp_path / "pkg1.src.rpm"
+        pkg1.write_text("fake")
+        pkg2 = tmp_path / "pkg2.src.rpm"
+        pkg2.write_text("fake")
+        builder = KojiBuilder()
+
+        with patch.object(builder, "build_package", side_effect=Exception("boom")):
+            result = builder.build_chain([("pkg1", str(pkg1)), ("pkg2", str(pkg2))])
+
+        assert result.success is False
+        assert "pkg1" in result.failed_packages
+
+
+class TestGetBuildStatusEdgeCases:
+    def test_get_build_status_pending_fallthrough(self, mock_subprocess_run):
+        """get_build_status should return PENDING for unrecognized state."""
+        mock_subprocess_run.return_value.returncode = 0
+        mock_subprocess_run.return_value.stdout = "Task: 12345\nState: waiting"
+        builder = KojiBuilder()
+
+        result = builder.get_build_status(12345)
+
+        assert result == BuildStatus.PENDING

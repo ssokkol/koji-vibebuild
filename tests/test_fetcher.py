@@ -160,6 +160,7 @@ class TestSRPMFetcher:
             fetcher.download_srpm("test-pkg")
 
     def test_search_fedora_src_success(self, tmp_path, mocker):
+        mocker.patch("vibebuild.fetcher.HAS_REQUESTS", True)
         mock_requests = mocker.patch("vibebuild.fetcher.requests")
         mock_requests.get.return_value.status_code = 200
         mock_requests.get.return_value.json.return_value = {
@@ -177,6 +178,7 @@ class TestSRPMFetcher:
         assert "python3-devel" in result
 
     def test_search_fedora_src_no_results(self, tmp_path, mocker):
+        mocker.patch("vibebuild.fetcher.HAS_REQUESTS", True)
         mock_requests = mocker.patch("vibebuild.fetcher.requests")
         mock_requests.get.return_value.status_code = 200
         mock_requests.get.return_value.json.return_value = {"projects": []}
@@ -234,6 +236,7 @@ python3-3.9.0-1.fc38
 class TestSRPMFetcherWithRequests:
     @pytest.fixture
     def mock_requests(self, mocker):
+        mocker.patch("vibebuild.fetcher.HAS_REQUESTS", True)
         mock = mocker.patch("vibebuild.fetcher.requests")
         mock.get.return_value.status_code = 200
         return mock
@@ -315,5 +318,288 @@ Version: 1.0
 """
 
         result = fetcher._extract_sources(spec_content)
+
+        assert result == []
+
+
+class TestSRPMFetcherGetEnv:
+    def test_get_env_with_no_ssl_verify(self, tmp_path):
+        """_get_env with no_ssl_verify=True should set SSL env vars."""
+        fetcher = SRPMFetcher(download_dir=str(tmp_path), no_ssl_verify=True)
+
+        env = fetcher._get_env()
+
+        assert env is not None
+        assert env["PYTHONHTTPSVERIFY"] == "0"
+        assert env["REQUESTS_CA_BUNDLE"] == ""
+        assert env["CURL_CA_BUNDLE"] == ""
+
+    def test_get_env_without_no_ssl_verify(self, tmp_path):
+        """_get_env without no_ssl_verify should return None."""
+        fetcher = SRPMFetcher(download_dir=str(tmp_path), no_ssl_verify=False)
+
+        env = fetcher._get_env()
+
+        assert env is None
+
+
+class TestSRPMFetcherDownloadWithNameResolver:
+    def test_download_srpm_with_name_resolver(self, tmp_path, mock_subprocess_run):
+        """download_srpm with name_resolver should try multiple candidates."""
+        mock_resolver = Mock()
+        mock_resolver.get_download_candidates.return_value = ["python-requests", "python3-requests"]
+        fetcher = SRPMFetcher(download_dir=str(tmp_path), name_resolver=mock_resolver)
+        mock_subprocess_run.return_value.returncode = 0
+        mock_subprocess_run.return_value.stdout = "Downloaded\n"
+        pkg_dir = tmp_path / "python-requests"
+        pkg_dir.mkdir()
+        srpm_file = pkg_dir / "python-requests-2.0-1.src.rpm"
+        srpm_file.write_text("fake srpm")
+
+        result = fetcher.download_srpm("python-requests", version="2.0-1")
+
+        assert "python-requests" in result
+        mock_resolver.get_download_candidates.assert_called_once_with("python-requests")
+
+
+class TestSRPMFetcherKojiEdgeCases:
+    def test_koji_cli_not_found(self, tmp_path, mock_subprocess_run):
+        """FileNotFoundError when koji CLI not installed."""
+        fetcher = SRPMFetcher(download_dir=str(tmp_path))
+        fetcher.sources = [
+            SRPMSource(name="koji", base_url="https://koji.example.com",
+                       koji_server="https://koji.example.com/kojihub", priority=1)
+        ]
+        mock_subprocess_run.side_effect = FileNotFoundError("koji not found")
+
+        with pytest.raises(SRPMNotFoundError, match="koji CLI not found"):
+            fetcher.download_srpm("test-pkg")
+
+    def test_koji_output_no_package_name(self, tmp_path, mock_subprocess_run):
+        """Koji output without matching package name."""
+        fetcher = SRPMFetcher(download_dir=str(tmp_path))
+        fetcher.sources = [
+            SRPMSource(name="koji", base_url="https://koji.example.com",
+                       koji_server="https://koji.example.com/kojihub", priority=1)
+        ]
+        mock_subprocess_run.side_effect = [
+            Mock(returncode=0, stdout="other-pkg-1.0-1.fc40  tag\n", stderr=""),
+        ]
+
+        with pytest.raises(SRPMNotFoundError, match="Could not find SRPM"):
+            fetcher.download_srpm("test-pkg")
+
+    def test_download_command_failure(self, tmp_path, mock_subprocess_run):
+        """Download command failure should raise."""
+        fetcher = SRPMFetcher(download_dir=str(tmp_path))
+        fetcher.sources = [
+            SRPMSource(name="koji", base_url="https://koji.example.com",
+                       koji_server="https://koji.example.com/kojihub", priority=1)
+        ]
+        mock_subprocess_run.side_effect = [
+            Mock(returncode=0, stdout="test-pkg-1.0-1.fc40  tag\n", stderr=""),
+            Mock(returncode=1, stdout="", stderr="download error"),
+        ]
+
+        with pytest.raises(SRPMNotFoundError, match="Could not find SRPM"):
+            fetcher.download_srpm("test-pkg")
+
+
+class TestSRPMFetcherSrcEdgeCases:
+    def test_http_source_url_in_spec(self, tmp_path, mock_subprocess_run, mocker):
+        """HTTP source URLs should be downloaded directly."""
+        mocker.patch("vibebuild.fetcher.HAS_REQUESTS", True)
+        mock_requests = mocker.patch("vibebuild.fetcher.requests")
+        mock_requests.get.return_value.status_code = 200
+        mock_requests.get.return_value.text = "Name: test\nVersion: 1.0\nRelease: 1\nSource0: https://example.com/test-1.0.tar.gz\n"
+        fetcher = SRPMFetcher(download_dir=str(tmp_path))
+        fetcher.sources = [
+            SRPMSource(name="fedora-src", base_url="https://src.fedoraproject.org/rpms", priority=1)
+        ]
+        mock_subprocess_run.return_value.returncode = 0
+        work_dir = tmp_path / "test" / "build"
+        work_dir.mkdir(parents=True)
+        srpm_file = work_dir / "test-1.0-1.src.rpm"
+        srpm_file.write_text("fake srpm")
+
+        with patch.object(fetcher, '_download_file'):
+            with patch("vibebuild.fetcher.Path.glob") as mock_glob:
+                mock_glob.return_value = [srpm_file]
+                result = fetcher.download_srpm("test")
+
+        assert "test" in result
+
+    def test_lookaside_exception_passes(self, tmp_path, mock_subprocess_run, mocker):
+        """Lookaside download exception should be silently ignored."""
+        mocker.patch("vibebuild.fetcher.HAS_REQUESTS", True)
+        mock_requests = mocker.patch("vibebuild.fetcher.requests")
+        mock_requests.get.return_value.status_code = 200
+        mock_requests.get.return_value.text = "Name: test\nVersion: 1.0\nRelease: 1\nSource0: local-file.tar.gz\n"
+        fetcher = SRPMFetcher(download_dir=str(tmp_path))
+        fetcher.sources = [
+            SRPMSource(name="fedora-src", base_url="https://src.fedoraproject.org/rpms", priority=1)
+        ]
+        mock_subprocess_run.return_value.returncode = 0
+        work_dir = tmp_path / "test" / "build"
+        work_dir.mkdir(parents=True)
+        srpm_file = work_dir / "test-1.0-1.src.rpm"
+        srpm_file.write_text("fake srpm")
+
+        with patch.object(fetcher, '_download_file', side_effect=Exception("download failed")):
+            with patch("vibebuild.fetcher.Path.glob") as mock_glob:
+                mock_glob.return_value = [srpm_file]
+                result = fetcher.download_srpm("test")
+
+        assert "test" in result
+
+    def test_rpmbuild_failure(self, tmp_path, mock_subprocess_run, mocker):
+        """rpmbuild failure should raise VibeBuildError."""
+        mocker.patch("vibebuild.fetcher.HAS_REQUESTS", True)
+        mock_requests = mocker.patch("vibebuild.fetcher.requests")
+        mock_requests.get.return_value.status_code = 200
+        mock_requests.get.return_value.text = "Name: test\nVersion: 1.0\nRelease: 1\n"
+        fetcher = SRPMFetcher(download_dir=str(tmp_path))
+        fetcher.sources = [
+            SRPMSource(name="fedora-src", base_url="https://src.fedoraproject.org/rpms", priority=1)
+        ]
+        mock_subprocess_run.return_value.returncode = 1
+        mock_subprocess_run.return_value.stderr = "rpmbuild error"
+
+        with pytest.raises(SRPMNotFoundError):
+            fetcher.download_srpm("test")
+
+    def test_no_srpm_after_rpmbuild(self, tmp_path, mock_subprocess_run, mocker):
+        """No SRPM after rpmbuild should raise SRPMNotFoundError."""
+        mocker.patch("vibebuild.fetcher.HAS_REQUESTS", True)
+        mock_requests = mocker.patch("vibebuild.fetcher.requests")
+        mock_requests.get.return_value.status_code = 200
+        mock_requests.get.return_value.text = "Name: test\nVersion: 1.0\nRelease: 1\n"
+        fetcher = SRPMFetcher(download_dir=str(tmp_path))
+        fetcher.sources = [
+            SRPMSource(name="fedora-src", base_url="https://src.fedoraproject.org/rpms", priority=1)
+        ]
+        mock_subprocess_run.return_value.returncode = 0
+
+        with pytest.raises(SRPMNotFoundError):
+            fetcher.download_srpm("test")
+
+
+class TestSRPMFetcherDownloadFile:
+    def test_download_file_without_requests_curl(self, tmp_path, mock_subprocess_run, mocker):
+        """_download_file without requests should use curl."""
+        mocker.patch("vibebuild.fetcher.HAS_REQUESTS", False)
+        fetcher = SRPMFetcher(download_dir=str(tmp_path))
+        mock_subprocess_run.return_value.returncode = 0
+
+        fetcher._download_file("https://example.com/file.tar.gz", tmp_path / "file.tar.gz")
+
+        call_args = mock_subprocess_run.call_args[0][0]
+        assert "curl" in call_args
+        assert "-L" in call_args
+
+    def test_download_file_without_requests_curl_ssl(self, tmp_path, mock_subprocess_run, mocker):
+        """_download_file without requests + no_ssl_verify should use curl -k."""
+        mocker.patch("vibebuild.fetcher.HAS_REQUESTS", False)
+        fetcher = SRPMFetcher(download_dir=str(tmp_path), no_ssl_verify=True)
+        mock_subprocess_run.return_value.returncode = 0
+
+        fetcher._download_file("https://example.com/file.tar.gz", tmp_path / "file.tar.gz")
+
+        call_args = mock_subprocess_run.call_args[0][0]
+        assert "-k" in call_args
+
+    def test_download_file_with_requests(self, tmp_path, mocker):
+        """_download_file with requests should use requests.get."""
+        mocker.patch("vibebuild.fetcher.HAS_REQUESTS", True)
+        mock_requests = mocker.patch("vibebuild.fetcher.requests")
+        mock_response = Mock()
+        mock_response.iter_content.return_value = [b"data"]
+        mock_requests.get.return_value = mock_response
+        fetcher = SRPMFetcher(download_dir=str(tmp_path))
+        dest = tmp_path / "file.tar.gz"
+
+        fetcher._download_file("https://example.com/file.tar.gz", dest)
+
+        mock_requests.get.assert_called_once()
+        assert dest.exists()
+
+
+class TestSRPMFetcherDownloadEmptySources:
+    def test_download_srpm_empty_sources_no_errors(self, tmp_path, mock_subprocess_run):
+        """download_srpm with empty sources list should raise without error details."""
+        fetcher = SRPMFetcher(download_dir=str(tmp_path))
+        fetcher.sources = []  # Override after init (empty list is falsy in constructor)
+
+        with pytest.raises(SRPMNotFoundError, match="Could not find SRPM"):
+            fetcher.download_srpm("test-pkg")
+
+
+class TestSRPMFetcherGetPackageVersionsEdgeCases:
+    def test_get_package_versions_empty_lines_and_no_hyphen(self, tmp_path, mock_subprocess_run):
+        """get_package_versions with empty lines and names without hyphen."""
+        mock_subprocess_run.return_value.returncode = 0
+        mock_subprocess_run.return_value.stdout = "python3-3.11.0-1.fc40\n\nsimplename\n"
+        fetcher = SRPMFetcher(download_dir=str(tmp_path))
+
+        result = fetcher.get_package_versions("python3")
+
+        assert "3.11.0" in result
+
+
+class TestSRPMFetcherCleanupEdgeCases:
+    def test_cleanup_nonexistent_dir(self, tmp_path):
+        """cleanup should handle non-existing download_dir."""
+        download_dir = tmp_path / "nonexistent"
+        fetcher = SRPMFetcher.__new__(SRPMFetcher)
+        fetcher.download_dir = download_dir
+        fetcher._cache = {"test": "value"}
+
+        fetcher.cleanup()
+
+        assert fetcher._cache == {}
+
+
+class TestSearchFedoraSrcEdgeCases:
+    def test_search_without_requests_uses_koji(self, tmp_path, mock_subprocess_run, mocker):
+        """search_fedora_src without requests should use koji CLI."""
+        mocker.patch("vibebuild.fetcher.HAS_REQUESTS", False)
+        fetcher = SRPMFetcher(download_dir=str(tmp_path))
+        mock_subprocess_run.return_value.returncode = 0
+        mock_subprocess_run.return_value.stdout = "python3\npython3-devel\n"
+
+        result = fetcher.search_fedora_src("python3")
+
+        assert "python3" in result
+        assert "python3-devel" in result
+
+    def test_search_without_requests_koji_failure(self, tmp_path, mock_subprocess_run, mocker):
+        """search_fedora_src without requests should return [] on failure."""
+        mocker.patch("vibebuild.fetcher.HAS_REQUESTS", False)
+        fetcher = SRPMFetcher(download_dir=str(tmp_path))
+        mock_subprocess_run.return_value.returncode = 1
+
+        result = fetcher.search_fedora_src("nonexistent")
+
+        assert result == []
+
+    def test_search_with_requests_exception(self, tmp_path, mocker):
+        """search_fedora_src with requests should return [] on exception."""
+        mocker.patch("vibebuild.fetcher.HAS_REQUESTS", True)
+        mock_requests = mocker.patch("vibebuild.fetcher.requests")
+        mock_requests.get.side_effect = Exception("connection error")
+        fetcher = SRPMFetcher(download_dir=str(tmp_path))
+
+        result = fetcher.search_fedora_src("python3")
+
+        assert result == []
+
+    def test_search_with_requests_non_200(self, tmp_path, mocker):
+        """search_fedora_src with non-200 status should return []."""
+        mocker.patch("vibebuild.fetcher.HAS_REQUESTS", True)
+        mock_requests = mocker.patch("vibebuild.fetcher.requests")
+        mock_requests.get.return_value.status_code = 500
+        fetcher = SRPMFetcher(download_dir=str(tmp_path))
+
+        result = fetcher.search_fedora_src("python3")
 
         assert result == []

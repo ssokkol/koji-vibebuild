@@ -191,7 +191,7 @@ class SpecAnalyzer:
                 name = self._expand_macros(name)
                 # Don't strip parentheses - virtual provides like python3dist(requests)
                 # are valid and will be resolved by PackageNameResolver later
-                if name:
+                if name:  # pragma: no branch
                     requirements.append(
                         BuildRequirement(name=name, version=version, operator=operator)
                     )

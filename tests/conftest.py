@@ -91,6 +91,7 @@ def mock_subprocess_run(mocker):
 @pytest.fixture
 def mock_requests(mocker):
     """Mock requests library for testing HTTP calls."""
+    mocker.patch("vibebuild.fetcher.HAS_REQUESTS", True)
     mock = mocker.patch("vibebuild.fetcher.requests")
     mock.get.return_value.status_code = 200
     mock.get.return_value.text = ""

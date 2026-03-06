@@ -359,3 +359,271 @@ class TestDependencyResolver:
         assert "no-srpm" in result
         assert "with-srpm" not in result
         assert "available" not in result
+
+
+class TestKojiClientGetEnv:
+    def test_get_env_with_no_ssl_verify(self):
+        """_get_env with no_ssl_verify should set SSL env vars."""
+        client = KojiClient(no_ssl_verify=True)
+
+        env = client._get_env()
+
+        assert env is not None
+        assert env["PYTHONHTTPSVERIFY"] == "0"
+        assert env["REQUESTS_CA_BUNDLE"] == ""
+        assert env["CURL_CA_BUNDLE"] == ""
+
+    def test_get_env_without_no_ssl_verify(self):
+        """_get_env without no_ssl_verify should return None."""
+        client = KojiClient(no_ssl_verify=False)
+
+        env = client._get_env()
+
+        assert env is None
+
+
+class TestKojiClientRunCommand:
+    def test_run_command_with_cert_serverca(self, mock_subprocess_run):
+        """_run_koji_command should include cert and serverca args."""
+        mock_subprocess_run.return_value.returncode = 0
+        client = KojiClient(cert="/path/cert.pem", serverca="/path/ca.crt")
+
+        client._run_koji_command("list-tags")
+
+        call_args = mock_subprocess_run.call_args[0][0]
+        assert "--cert=/path/cert.pem" in call_args
+        assert "--serverca=/path/ca.crt" in call_args
+
+    def test_run_command_with_cert_only(self, mock_subprocess_run):
+        """_run_koji_command with cert but no serverca."""
+        mock_subprocess_run.return_value.returncode = 0
+        client = KojiClient(cert="/path/cert.pem", serverca=None)
+
+        client._run_koji_command("list-tags")
+
+        call_args = mock_subprocess_run.call_args[0][0]
+        assert "--cert=/path/cert.pem" in call_args
+        assert not any("--serverca" in a for a in call_args)
+
+    def test_run_command_generic_exception(self, mock_subprocess_run):
+        """_run_koji_command should wrap generic exceptions as KojiConnectionError."""
+        mock_subprocess_run.side_effect = OSError("Permission denied")
+        client = KojiClient()
+
+        with pytest.raises(KojiConnectionError, match="Failed to run koji command"):
+            client._run_koji_command("list-tags")
+
+
+class TestDependencyResolverWithNameResolver:
+    def test_find_missing_deps_with_name_resolver(self, mock_koji_client):
+        """find_missing_deps should use name_resolver to resolve names."""
+        mock_nr = Mock()
+        mock_nr.resolve.side_effect = lambda n: "python3-requests" if n == "python3dist(requests)" else n
+        mock_koji_client.list_packages.return_value = ["python3-requests", "gcc"]
+        mock_koji_client.package_exists.return_value = True
+        resolver = DependencyResolver(koji_client=mock_koji_client, name_resolver=mock_nr)
+
+        result = resolver.find_missing_deps(["python3dist(requests)"])
+
+        assert result == []
+
+    def test_find_missing_deps_resolved_different_original_available(self, mock_koji_client):
+        """When resolved != name and original name is available in packages."""
+        mock_nr = Mock()
+        mock_nr.resolve.return_value = "resolved-name"
+        mock_koji_client.list_packages.return_value = ["original-name"]
+        mock_koji_client.package_exists.side_effect = lambda p, t: p == "original-name"
+        resolver = DependencyResolver(koji_client=mock_koji_client, name_resolver=mock_nr)
+
+        result = resolver.find_missing_deps(["original-name"])
+
+        assert result == []
+
+    def test_build_dependency_graph_with_name_resolver(self, mock_koji_client):
+        """build_dependency_graph should use name_resolver."""
+        mock_nr = Mock()
+        mock_nr.resolve.side_effect = lambda n: n
+        mock_koji_client.package_exists.return_value = True
+        resolver = DependencyResolver(koji_client=mock_koji_client, name_resolver=mock_nr)
+
+        result = resolver.build_dependency_graph("pkg", "/path/to/pkg.src.rpm")
+
+        assert "pkg" in result
+        mock_nr.resolve.assert_called()
+
+
+class TestResolveDeepsException:
+    def test_resolve_deps_exception_sets_empty_deps(self, mock_koji_client):
+        """resolve_deps exception should set dependencies=[]."""
+        mock_koji_client.package_exists.return_value = False
+        resolver = DependencyResolver(koji_client=mock_koji_client)
+
+        with patch("vibebuild.resolver.get_build_requires", side_effect=Exception("parse error")):
+            result = resolver.build_dependency_graph("pkg", "/path/to/pkg.src.rpm")
+
+        assert "pkg" in result
+        assert result["pkg"].dependencies == []
+
+
+class TestGetBuildChainNodeNotFound:
+    def test_get_build_chain_node_not_found(self, mock_koji_client):
+        """get_build_chain should skip packages not in dependency_graph."""
+        resolver = DependencyResolver(koji_client=mock_koji_client)
+        resolver._dependency_graph = {
+            "pkg-a": DependencyNode(name="pkg-a", dependencies=[], is_available=False),
+        }
+
+        result = resolver.get_build_chain()
+
+        assert len(result) >= 1
+        assert "pkg-a" in result[0]
+
+    def test_get_build_chain_ghost_node_in_sort(self, mock_koji_client):
+        """get_build_chain should skip nodes returned by topological_sort but missing from graph."""
+        resolver = DependencyResolver(koji_client=mock_koji_client)
+        resolver._dependency_graph = {
+            "pkg-a": DependencyNode(name="pkg-a", dependencies=[], is_available=False),
+        }
+        with patch.object(resolver, "topological_sort", return_value=["pkg-a", "ghost-pkg"]):
+            result = resolver.get_build_chain()
+
+        assert len(result) >= 1
+        assert "pkg-a" in result[0]
+
+
+class TestFindMissingDepsOriginalNameFallback:
+    def test_original_name_exists_in_koji(self, mock_koji_client):
+        """When resolved != name, original name found via package_exists should not be missing."""
+        mock_nr = Mock()
+        mock_nr.resolve.return_value = "resolved-different"
+        mock_koji_client.list_packages.return_value = []
+        mock_koji_client.package_exists.side_effect = lambda p, t: p == "original-name"
+        resolver = DependencyResolver(koji_client=mock_koji_client, name_resolver=mock_nr)
+
+        result = resolver.find_missing_deps(["original-name"])
+
+        assert result == []
+
+
+class TestListPackagesEmptyLines:
+    def test_list_packages_with_empty_lines(self, mock_subprocess_run):
+        """list_packages should handle empty lines in output."""
+        mock_subprocess_run.return_value.returncode = 0
+        mock_subprocess_run.return_value.stdout = "python3\n\ngcc\n\n"
+        mock_subprocess_run.return_value.stderr = ""
+        client = KojiClient()
+
+        result = client.list_packages("fedora-build")
+
+        assert "python3" in result
+        assert "gcc" in result
+
+    def test_list_packages_with_whitespace_only_line(self, mock_subprocess_run):
+        """list_packages should handle whitespace-only lines."""
+        mock_subprocess_run.return_value.returncode = 0
+        mock_subprocess_run.return_value.stdout = "python3\n   \ngcc\n"
+        mock_subprocess_run.return_value.stderr = ""
+        client = KojiClient()
+
+        result = client.list_packages("fedora-build")
+
+        assert "python3" in result
+        assert "gcc" in result
+
+    def test_list_tagged_builds_with_empty_lines(self, mock_subprocess_run):
+        """list_tagged_builds should handle empty lines in output."""
+        mock_subprocess_run.return_value.returncode = 0
+        mock_subprocess_run.return_value.stdout = "python3-3.11.0-1.fc40  fedora-build  admin\n\ngcc-13.0-1.fc40  fedora-build  admin\n"
+        mock_subprocess_run.return_value.stderr = ""
+        client = KojiClient()
+
+        result = client.list_tagged_builds("fedora-build")
+
+        assert "python3" in result
+        assert "gcc" in result
+
+
+class TestListTaggedBuildsWhitespaceLine:
+    def test_list_tagged_builds_whitespace_only_line(self, mock_subprocess_run):
+        """list_tagged_builds should handle whitespace-only lines."""
+        mock_subprocess_run.return_value.returncode = 0
+        mock_subprocess_run.return_value.stdout = "python3-3.11.0-1.fc40  tag  admin\n   \ngcc-13.0-1.fc40  tag  admin\n"
+        mock_subprocess_run.return_value.stderr = ""
+        client = KojiClient()
+
+        result = client.list_tagged_builds("fedora-build")
+
+        assert "python3" in result
+        assert "gcc" in result
+
+
+class TestFindMissingDepsOriginalNameNotFound:
+    def test_original_name_not_in_koji(self, mock_koji_client):
+        """When resolved != name and original name NOT found, append to missing."""
+        mock_nr = Mock()
+        mock_nr.resolve.return_value = "resolved-different"
+        mock_koji_client.list_packages.return_value = []
+        mock_koji_client.package_exists.return_value = False
+        resolver = DependencyResolver(koji_client=mock_koji_client, name_resolver=mock_nr)
+
+        result = resolver.find_missing_deps(["original-name"])
+
+        assert "resolved-different" in result
+
+
+class TestBuildDependencyGraphEdgeCases:
+    def test_dep_without_srpm(self, mock_koji_client):
+        """Dependency with no SRPM should have empty deps."""
+        mock_koji_client.package_exists.side_effect = lambda p, t: p not in ["root", "dep-no-srpm"]
+        resolver = DependencyResolver(koji_client=mock_koji_client)
+
+        with patch("vibebuild.resolver.get_build_requires") as mock_reqs:
+            mock_reqs.return_value = ["dep-no-srpm"]
+            result = resolver.build_dependency_graph(
+                "root", "/path/to/root.src.rpm",
+                srpm_resolver=lambda pkg: None
+            )
+
+        assert "dep-no-srpm" in result
+        assert result["dep-no-srpm"].srpm_path is None
+
+    def test_no_srpm_resolver(self, mock_koji_client):
+        """Without srpm_resolver, deps should get no SRPM path."""
+        mock_koji_client.package_exists.side_effect = lambda p, t: p not in ["root", "dep"]
+        resolver = DependencyResolver(koji_client=mock_koji_client)
+
+        with patch("vibebuild.resolver.get_build_requires") as mock_reqs:
+            mock_reqs.side_effect = lambda srpm: ["dep"] if "root" in srpm else []
+            result = resolver.build_dependency_graph(
+                "root", "/path/to/root.src.rpm"
+            )
+
+        assert "dep" in result
+        assert result["dep"].srpm_path is None
+
+
+class TestTopologicalSortEdgeCases:
+    def test_dep_not_in_graph(self, mock_koji_client):
+        """Dep reference not in graph should be handled."""
+        resolver = DependencyResolver(koji_client=mock_koji_client)
+        resolver._dependency_graph = {
+            "pkg-a": DependencyNode(name="pkg-a", dependencies=["external-dep"], is_available=False),
+        }
+
+        result = resolver.topological_sort()
+        assert "pkg-a" in result
+
+
+class TestGetBuildChainWithAvailableDep:
+    def test_dep_in_levels_false(self, mock_koji_client):
+        """get_build_chain: dep not in levels (available dep) should be skipped."""
+        resolver = DependencyResolver(koji_client=mock_koji_client)
+        resolver._dependency_graph = {
+            "pkg-a": DependencyNode(name="pkg-a", dependencies=["avail-dep"], is_available=False),
+            "avail-dep": DependencyNode(name="avail-dep", is_available=True),
+        }
+
+        result = resolver.get_build_chain()
+
+        assert len(result) >= 1
+        assert "pkg-a" in result[0]

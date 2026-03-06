@@ -284,3 +284,124 @@ class TestGetPackageInfoFromSrpm:
 
             with pytest.raises(InvalidSRPMError, match="No spec file found"):
                 get_package_info_from_srpm(str(srpm))
+
+
+class TestSpecAnalyzerEdgeCases:
+    def test_extract_value_without_colon(self):
+        """_extract_value should return '' when line has no colon."""
+        analyzer = SpecAnalyzer()
+
+        result = analyzer._extract_value("NoColonHere", "NoColonHere")
+
+        assert result == ""
+
+    def test_build_requires_with_empty_parts(self, tmp_path):
+        """BuildRequires with consecutive commas should skip empty parts."""
+        spec = tmp_path / "empty_parts.spec"
+        spec.write_text("Name: test-pkg\nVersion: 1.0\nRelease: 1\nBuildRequires: gcc,,make\n")
+        analyzer = SpecAnalyzer()
+
+        result = analyzer.analyze_spec(str(spec))
+
+        req_names = [r.name for r in result.build_requires]
+        assert "gcc" in req_names
+        assert "make" in req_names
+
+    def test_build_requires_version_as_separate_tokens(self, tmp_path):
+        """BuildRequires with 'pkg >= ver' as separate tokens in comma list."""
+        spec = tmp_path / "sep_tokens.spec"
+        spec.write_text("Name: test-pkg\nVersion: 1.0\nRelease: 1\nBuildRequires: pkg-a, >= ,1.0\n")
+        analyzer = SpecAnalyzer()
+
+        result = analyzer.analyze_spec(str(spec))
+
+        req_names = [r.name for r in result.build_requires]
+        assert "pkg-a" in req_names
+
+
+class TestSpecAnalyzerBranchCoverage:
+    def test_source_line_with_empty_url(self, tmp_path):
+        """Source line with nothing after colon should not add empty URL."""
+        spec = tmp_path / "empty_source.spec"
+        spec.write_text("Name: test-pkg\nVersion: 1.0\nRelease: 1\nSource0:\n")
+        analyzer = SpecAnalyzer()
+
+        result = analyzer.analyze_spec(str(spec))
+
+        assert result.source_urls == []
+
+    def test_build_requires_macro_expands_to_empty(self, tmp_path):
+        """BuildRequires with macro that expands to empty should be skipped."""
+        spec = tmp_path / "macro_empty.spec"
+        spec.write_text("Name: test-pkg\nVersion: 1.0\nRelease: 1\nBuildRequires: %{?nonexistent_macro}\n")
+        analyzer = SpecAnalyzer()
+
+        result = analyzer.analyze_spec(str(spec))
+
+        req_names = [r.name for r in result.build_requires]
+        assert "" not in req_names
+
+    def test_build_requires_version_op_without_name(self, tmp_path):
+        """BuildRequires starting with version operator should give empty name."""
+        spec = tmp_path / "no_name.spec"
+        spec.write_text("Name: test-pkg\nVersion: 1.0\nRelease: 1\nBuildRequires: >=1.0\n")
+        analyzer = SpecAnalyzer()
+
+        result = analyzer.analyze_spec(str(spec))
+
+        req_names = [r.name for r in result.build_requires]
+        assert "" not in req_names
+
+    def test_duplicate_requires_in_rpm_output(self, mock_subprocess_run):
+        """get_build_requires should deduplicate requires."""
+        mock_subprocess_run.return_value.returncode = 0
+        mock_subprocess_run.return_value.stdout = "python3-devel\ngcc\npython3-devel\ngcc\n"
+        mock_subprocess_run.return_value.stderr = ""
+
+        with patch("vibebuild.analyzer.Path") as mock_path:
+            mock_path.return_value.exists.return_value = True
+            mock_path.return_value.suffix = ".rpm"
+            mock_path.return_value.name = "test.src.rpm"
+            result = get_build_requires("/fake/test.src.rpm")
+
+        assert result.count("python3-devel") == 1
+        assert result.count("gcc") == 1
+
+
+class TestGetBuildRequiresEdgeCases:
+    def test_rpm2cpio_not_found(self, tmp_path, mock_subprocess_run):
+        """get_build_requires should handle rpm2cpio not found."""
+        srpm = tmp_path / "test.src.rpm"
+        srpm.write_text("fake srpm content")
+        mock_subprocess_run.side_effect = FileNotFoundError("rpm2cpio not found")
+
+        with pytest.raises(InvalidSRPMError, match="rpm2cpio not found"):
+            get_build_requires(str(srpm))
+
+    def test_rpm_qp_failure(self, tmp_path, mock_subprocess_run):
+        """get_build_requires should raise on rpm -qp failure."""
+        srpm = tmp_path / "test.src.rpm"
+        srpm.write_text("fake srpm content")
+        mock_subprocess_run.side_effect = [
+            Mock(returncode=0, stdout=b"", stderr=b""),  # rpm2cpio
+            Mock(returncode=1, stdout="", stderr="rpm query failed"),  # rpm -qp
+        ]
+
+        with pytest.raises(InvalidSRPMError, match="Failed to query"):
+            get_build_requires(str(srpm))
+
+    def test_stdout_with_empty_lines(self, mock_subprocess_run):
+        """get_build_requires should skip empty lines in output."""
+        mock_subprocess_run.return_value.returncode = 0
+        mock_subprocess_run.return_value.stdout = "\n\npython3-devel\n\ngcc\n\n"
+        mock_subprocess_run.return_value.stderr = ""
+
+        with patch("vibebuild.analyzer.Path") as mock_path:
+            mock_path.return_value.exists.return_value = True
+            mock_path.return_value.suffix = ".rpm"
+            mock_path.return_value.name = "test.src.rpm"
+            result = get_build_requires("/fake/test.src.rpm")
+
+        assert "python3-devel" in result
+        assert "gcc" in result
+        assert "" not in result

@@ -13,9 +13,14 @@ from vibebuild.cli import (
     cmd_download,
     cmd_build,
     main,
+    load_koji_config,
+    create_name_resolver,
+    ensure_srpm_path,
+    _HelpAllArgumentParser,
 )
 from vibebuild.builder import BuildResult, BuildTask, BuildStatus
 from vibebuild.analyzer import PackageInfo, BuildRequirement
+from vibebuild.exceptions import VibeBuildError
 
 
 class TestCreateParser:
@@ -514,3 +519,285 @@ class TestMain:
                 result = main(["-q", "target", str(srpm)])
 
         mock_logging.assert_called_with(False, True)
+
+
+class TestLoadKojiConfig:
+    def test_load_koji_config_with_real_file(self, tmp_path):
+        """load_koji_config should parse a real config file."""
+        koji_dir = tmp_path / ".koji"
+        koji_dir.mkdir()
+        config_path = koji_dir / "config"
+        config_path.write_text("[koji]\nserver = https://my-koji/kojihub\nweburl = https://my-koji/koji\ncert = ~/client.pem\nserverca = ~/serverca.pem\n")
+
+        with patch("vibebuild.cli.Path.home", return_value=tmp_path):
+            result = load_koji_config()
+
+        assert isinstance(result, dict)
+        assert result["server"] == "https://my-koji/kojihub"
+        assert result["web_url"] == "https://my-koji/koji"
+
+    def test_load_koji_config_no_files(self):
+        """load_koji_config should return defaults when no config files exist."""
+        result = load_koji_config()
+
+        assert isinstance(result, dict)
+        assert "server" in result
+        assert "web_url" in result
+
+    def test_load_koji_config_corrupt_file(self, tmp_path):
+        """load_koji_config should handle corrupt config files gracefully."""
+        koji_dir = tmp_path / ".koji"
+        koji_dir.mkdir()
+        config_path = koji_dir / "config"
+        config_path.write_text("THIS IS NOT\nVALID INI\n[[[broken")
+
+        with patch("vibebuild.cli.Path.home", return_value=tmp_path):
+            result = load_koji_config()
+
+        assert isinstance(result, dict)
+
+    def test_load_koji_config_without_koji_section(self, tmp_path):
+        """Config file without [koji] section should be skipped."""
+        koji_dir = tmp_path / ".koji"
+        koji_dir.mkdir()
+        config_path = koji_dir / "config"
+        config_path.write_text("[other]\nfoo = bar\n")
+
+        with patch("vibebuild.cli.Path.home", return_value=tmp_path):
+            result = load_koji_config()
+
+        assert result["server"] is None
+
+    def test_load_koji_config_empty_koji_section(self, tmp_path):
+        """Config with empty [koji] section should leave defaults."""
+        koji_dir = tmp_path / ".koji"
+        koji_dir.mkdir()
+        config_path = koji_dir / "config"
+        config_path.write_text("[koji]\n")
+
+        with patch("vibebuild.cli.Path.home", return_value=tmp_path):
+            result = load_koji_config()
+
+        assert result["server"] is None
+        assert result["web_url"] is None
+        assert result["cert"] is None
+        assert result["serverca"] is None
+
+
+class TestCreateNameResolver:
+    def test_create_name_resolver_import_error(self, mocker):
+        """create_name_resolver should handle ImportError for ml_resolver."""
+        mocker.patch("vibebuild.cli.PackageNameResolver")
+        with patch("builtins.__import__", side_effect=ImportError("no ml")):
+            resolver = create_name_resolver(no_ml=False)
+
+        assert resolver is not None
+
+    def test_create_name_resolver_no_ml(self):
+        """create_name_resolver with no_ml=True should not import ML."""
+        resolver = create_name_resolver(no_ml=True)
+
+        assert resolver is not None
+        assert resolver.ml_resolver is None
+
+    def test_create_name_resolver_ml_available(self, mocker):
+        """create_name_resolver should use ML resolver when available."""
+        mock_ml_instance = MagicMock()
+        mock_ml_instance.is_available.return_value = True
+        mock_ml_cls = MagicMock(return_value=mock_ml_instance)
+        mock_module = MagicMock()
+        mock_module.MLPackageResolver = mock_ml_cls
+        mocker.patch.dict("sys.modules", {"vibebuild.ml_resolver": mock_module})
+
+        resolver = create_name_resolver(no_ml=False)
+        assert resolver.ml_resolver == mock_ml_instance
+
+
+class TestFormatHelp:
+    def test_format_help_short(self):
+        """format_help should return short help without --help-all."""
+        parser = _HelpAllArgumentParser(
+            prog="vibebuild",
+            description="Test parser",
+        )
+        # Simulate no --help-all in sys.argv
+        original_argv = sys.argv
+        sys.argv = ["vibebuild"]
+        try:
+            help_text = parser.format_help()
+        finally:
+            sys.argv = original_argv
+
+        assert "Full list of options" in help_text
+
+    def test_format_help_full(self):
+        """format_help with --help-all should return full help."""
+        parser = create_parser()
+        original_argv = sys.argv
+        sys.argv = ["vibebuild", "--help-all"]
+        try:
+            help_text = parser.format_help()
+        finally:
+            sys.argv = original_argv
+
+        assert "Koji options" in help_text or "Build options" in help_text
+
+
+class TestEnsureSrpmPath:
+    def test_ensure_srpm_path_existing_file(self, tmp_path):
+        """ensure_srpm_path should return resolved path for existing file."""
+        srpm = tmp_path / "test.src.rpm"
+        srpm.write_text("fake srpm")
+
+        result = ensure_srpm_path(str(srpm), None, False, True, None)
+
+        assert result == str(srpm.resolve())
+
+    def test_ensure_srpm_path_downloads_by_name(self, tmp_path):
+        """ensure_srpm_path should download when path doesn't exist."""
+        with patch("vibebuild.cli.create_name_resolver") as mock_nr:
+            with patch("vibebuild.cli.SRPMFetcher") as mock_fetcher:
+                mock_fetcher.return_value.download_srpm.return_value = "/path/to/downloaded.src.rpm"
+                result = ensure_srpm_path("python3", str(tmp_path), False, False, None)
+
+        assert result == "/path/to/downloaded.src.rpm"
+
+    def test_ensure_srpm_path_exception_in_main(self, tmp_path):
+        """main should handle exception from ensure_srpm_path."""
+        with patch("vibebuild.cli.ensure_srpm_path", side_effect=Exception("download failed")):
+            result = main(["target", "nonexistent-pkg"])
+
+        assert result == 1
+
+
+class TestCmdBuildEdgeCases:
+    def test_cmd_build_dry_run_with_build_chain(self, tmp_path, capsys):
+        """cmd_build dry_run with non-empty build_chain."""
+        srpm = tmp_path / "test.src.rpm"
+        srpm.write_text("fake srpm")
+
+        with patch("vibebuild.cli.KojiBuilder") as mock_builder:
+            with patch("vibebuild.cli.get_package_info_from_srpm") as mock_info:
+                mock_info.return_value = PackageInfo(
+                    name="test", version="1.0", release="1",
+                    build_requires=[], source_urls=[]
+                )
+                mock_builder.return_value.resolver.build_dependency_graph.return_value = None
+                mock_builder.return_value.resolver.get_build_chain.return_value = [["dep1"], ["dep2"]]
+                mock_builder.return_value.fetcher.download_srpm.return_value = "/path/to/dep.src.rpm"
+                result = cmd_build(
+                    target="target", srpm_path=str(srpm),
+                    server="server", web_url="web",
+                    cert=None, serverca=None,
+                    build_tag="tag", scratch=False, nowait=False,
+                    no_deps=False, download_dir=None, dry_run=True
+                )
+
+        assert result == 0
+        captured = capsys.readouterr()
+        assert "Build order" in captured.out
+
+    def test_cmd_build_dry_run_srpm_resolver_captured(self, tmp_path, capsys):
+        """cmd_build dry_run srpm_resolver should be callable."""
+        srpm = tmp_path / "test.src.rpm"
+        srpm.write_text("fake srpm")
+
+        captured_resolver = {}
+
+        def capture(name, path, srpm_resolver=None):
+            captured_resolver["fn"] = srpm_resolver
+
+        with patch("vibebuild.cli.KojiBuilder") as mock_builder:
+            with patch("vibebuild.cli.get_package_info_from_srpm") as mock_info:
+                mock_info.return_value = PackageInfo(
+                    name="test", version="1.0", release="1",
+                    build_requires=[], source_urls=[]
+                )
+                mock_builder.return_value.resolver.build_dependency_graph.side_effect = capture
+                mock_builder.return_value.resolver.get_build_chain.return_value = []
+                result = cmd_build(
+                    target="target", srpm_path=str(srpm),
+                    server="server", web_url="web",
+                    cert=None, serverca=None,
+                    build_tag="tag", scratch=False, nowait=False,
+                    no_deps=False, download_dir=None, dry_run=True
+                )
+
+        assert result == 0
+        assert captured_resolver["fn"] is not None
+        # Test success path
+        mock_builder.return_value.fetcher.download_srpm.return_value = "/path/to/pkg.src.rpm"
+        assert captured_resolver["fn"]("some-pkg") == "/path/to/pkg.src.rpm"
+        # Test exception path
+        mock_builder.return_value.fetcher.download_srpm.side_effect = Exception("fail")
+        assert captured_resolver["fn"]("some-pkg") is None
+
+    def test_cmd_build_dry_run_no_deps(self, tmp_path, capsys):
+        """cmd_build dry_run with no_deps=True should skip dep graph."""
+        srpm = tmp_path / "test.src.rpm"
+        srpm.write_text("fake srpm")
+
+        with patch("vibebuild.cli.KojiBuilder") as mock_builder:
+            with patch("vibebuild.cli.get_package_info_from_srpm") as mock_info:
+                mock_info.return_value = PackageInfo(
+                    name="test", version="1.0", release="1",
+                    build_requires=[], source_urls=[]
+                )
+                result = cmd_build(
+                    target="target", srpm_path=str(srpm),
+                    server="server", web_url="web",
+                    cert=None, serverca=None,
+                    build_tag="tag", scratch=False, nowait=False,
+                    no_deps=True, download_dir=None, dry_run=True
+                )
+
+        assert result == 0
+        captured = capsys.readouterr()
+        assert "DRY RUN" in captured.out
+
+    def test_cmd_build_vibe_build_error(self, tmp_path, capsys):
+        """cmd_build should handle VibeBuildError."""
+        srpm = tmp_path / "test.src.rpm"
+        srpm.write_text("fake srpm")
+
+        with patch("vibebuild.cli.KojiBuilder") as mock_builder:
+            mock_builder.return_value.build_with_deps.side_effect = VibeBuildError("vibe error")
+            result = cmd_build(
+                target="target", srpm_path=str(srpm),
+                server="server", web_url="web",
+                cert=None, serverca=None,
+                build_tag="tag", scratch=False, nowait=False,
+                no_deps=False, download_dir=None, dry_run=False
+            )
+
+        assert result == 1
+
+    def test_cmd_build_unexpected_exception(self, tmp_path, capsys):
+        """cmd_build should handle unexpected exceptions."""
+        srpm = tmp_path / "test.src.rpm"
+        srpm.write_text("fake srpm")
+
+        with patch("vibebuild.cli.KojiBuilder") as mock_builder:
+            mock_builder.return_value.build_with_deps.side_effect = RuntimeError("unexpected")
+            result = cmd_build(
+                target="target", srpm_path=str(srpm),
+                server="server", web_url="web",
+                cert=None, serverca=None,
+                build_tag="tag", scratch=False, nowait=False,
+                no_deps=False, download_dir=None, dry_run=False
+            )
+
+        assert result == 1
+
+
+class TestMainEdgeCases:
+    def test_main_help_all(self):
+        """main with --help-all should return 0."""
+        original_argv = sys.argv
+        sys.argv = ["vibebuild", "--help-all"]
+        try:
+            result = main(["--help-all"])
+        finally:
+            sys.argv = original_argv
+
+        assert result == 0

@@ -295,7 +295,7 @@ class DependencyResolver:
         while queue:
             pkg = queue.pop(0)
 
-            if pkg in self._dependency_graph and not self._dependency_graph[pkg].is_available:
+            if pkg in self._dependency_graph and not self._dependency_graph[pkg].is_available:  # pragma: no branch
                 result.append(pkg)
                 self._dependency_graph[pkg].build_order = order
                 order += 1

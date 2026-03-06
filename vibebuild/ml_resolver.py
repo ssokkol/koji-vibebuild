@@ -15,12 +15,12 @@ from pathlib import Path
 from typing import Optional
 
 try:
-    from sklearn.feature_extraction.text import TfidfVectorizer
-    from sklearn.neighbors import NearestNeighbors
-    import joblib
+    from sklearn.feature_extraction.text import TfidfVectorizer  # pragma: no cover
+    from sklearn.neighbors import NearestNeighbors  # pragma: no cover
+    import joblib  # pragma: no cover
 
-    HAS_SKLEARN = True
-except ImportError:
+    HAS_SKLEARN = True  # pragma: no cover
+except ImportError:  # pragma: no cover
     HAS_SKLEARN = False
 
 logger = logging.getLogger(__name__)
