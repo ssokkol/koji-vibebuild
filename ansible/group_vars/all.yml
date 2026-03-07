@@ -16,9 +16,9 @@ ssl_cert_city: "Moscow"
 ssl_cert_org: "VibeBuild"
 ssl_cert_ou: "Build System"
 
-koji_build_tag: "fedora-build"
-koji_dest_tag: "fedora-dest"
-koji_target: "fedora-target"
+koji_build_tag: "f42-build"
+koji_dest_tag: "f42"
+koji_target: "f42"
 
 external_repos:
   - name: "fedora-base"
@@ -26,7 +26,7 @@ external_repos:
   - name: "fedora-updates"
     url: "https://mirrors.fedoraproject.org/mirrorlist?repo=updates-released-f$releasever&arch=$basearch"
 
-mock_chroot: "fedora-40-x86_64"
+mock_chroot: "fedora-42-x86_64"
 
 firewall_ports:
   - 80/tcp

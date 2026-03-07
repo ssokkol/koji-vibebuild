@@ -161,3 +161,12 @@
     regen-repo {{ koji_build_tag }}
   async: 3600
   poll: 30
+
+- name: Set default build target in koji client config
+  ini_file:
+    path: /etc/koji.conf
+    section: koji
+    option: target
+    value: "{{ koji_target }}"
+    create: yes
+  become: yes

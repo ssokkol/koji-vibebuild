@@ -41,14 +41,17 @@ pip install -e ".[dev,ml]" # both dev and ML
 
 ### Usage
 
-Basic form: `vibebuild [OPTIONS] TARGET SRPM`. SRPM can be a path to a `.src.rpm` file or a **package name** (e.g. `python3`); if it is a name, the SRPM is downloaded from Koji and then built.
+Basic form: `vibebuild [OPTIONS] SRPM` or `vibebuild [OPTIONS] TARGET SRPM`.
+SRPM can be a path to a `.src.rpm` file or a **package name** (e.g. `python3`).
+When TARGET is omitted, it is read from the `target` key in `~/.koji/config [koji]`.
 
 ```bash
-# One command: download SRPM by name and build (with dependency resolution)
-vibebuild fedora-43 python3
-vibebuild fedora-43 python-requests
+# One command: target from ~/.koji/config, download SRPM by name and build
+vibebuild python-requests
+vibebuild python3
 
-# Build from local SRPM file
+# Explicit target (or if target is not in config)
+vibebuild fedora-target python-requests
 vibebuild fedora-target my-package-1.0-1.fc40.src.rpm
 
 # Scratch build (not tagged)
@@ -64,7 +67,7 @@ vibebuild --analyze-only my-package.src.rpm
 vibebuild --download-only python-requests
 
 # Dry run — show build order and what would be built
-vibebuild --dry-run fedora-target my-package.src.rpm
+vibebuild --dry-run my-package.src.rpm
 
 # Name resolution options
 vibebuild --no-ml fedora-target my-package.src.rpm              # rules only
@@ -95,8 +98,8 @@ To verify dependency resolution on a real package (requires `koji` CLI and netwo
 ```bash
 vibebuild --download-only python-requests
 vibebuild --analyze-only python-requests-*.src.rpm   # use the downloaded file
-vibebuild --dry-run fedora-43 python-requests         # package name: download then show plan
-vibebuild --dry-run fedora-43 python-requests-*.src.rpm
+vibebuild --dry-run python-requests          # target from ~/.koji/config
+vibebuild --dry-run fedora-43 python-requests  # explicit target
 ```
 
 Without `koji`, use any existing `.src.rpm` you have for `--analyze-only` and `--dry-run`. See [TESTING.md](docs/TESTING.md) for running the test suite.
@@ -106,6 +109,9 @@ Without `koji`, use any existing `.src.rpm` you have for `--analyze-only` and `-
 If you use Koji already, `vibebuild` reads `~/.koji/config` (and `/etc/koji.conf`) for `server`, `weburl`, `cert`, and `serverca`, so you often only need to pass `--server` if overriding. For all options run `vibebuild --help-all`.
 
 ```bash
+# After configuring ~/.koji/config with target = my-target:
+vibebuild my-package.src.rpm
+
 vibebuild --server https://koji.example.com/kojihub my-target my-package.src.rpm
 # or with explicit certs:
 vibebuild --server https://koji.example.com/kojihub --cert ~/.koji/client.pem \

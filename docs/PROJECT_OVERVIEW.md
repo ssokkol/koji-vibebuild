@@ -54,7 +54,7 @@
 | Развернуть VPS, поставить Koji | Ansible-плейбук в `ansible/` для автоматического деплоя |
 | SRPM Source / RPM Binary | Analyzer (`analyzer.py`) работает с SRPM (Source RPM), Builder (`builder.py`) создает RPM (Binary) через Koji |
 | `KOJI BUILD [NAME PACK]` | Поддержка через `vibebuild --no-deps TARGET SRPM` (прямая сборка без разрешения зависимостей) |
-| `KOJI VIBEBUILD [PACKAGENAME]` | Основная команда `vibebuild TARGET SRPM`: SRPM — путь к .src.rpm или имя пакета (тогда скачивание из Koji и сборка с разрешением зависимостей) |
+| `KOJI VIBEBUILD [PACKAGENAME]` | `vibebuild SRPM` (target из `~/.koji/config`) или `vibebuild TARGET SRPM`. SRPM — путь к .src.rpm или имя пакета (тогда скачивание из Koji и сборка с разрешением зависимостей) |
 | Подгрузка зависимостей | Fetcher (`fetcher.py`) скачивает SRPM из Fedora Koji и src.fedoraproject.org |
 | BUILD других зависимостей | Builder (`builder.py`) собирает зависимости по уровням DAG перед сборкой основного пакета |
 
@@ -424,7 +424,7 @@ python scripts/train_model.py --input data/training_data.json --output vibebuild
 
 ```mermaid
 flowchart TB
-    Start(["vibebuild fedora-target my-pkg.src.rpm"]) --> ParseArgs["Парсинг аргументов CLI"]
+    Start(["vibebuild my-pkg.src.rpm\n(target из ~/.koji/config)"]) --> ParseArgs["Парсинг аргументов CLI"]
     ParseArgs --> CreateBuilder["Создание KojiBuilder<br/>с KojiClient, Resolver, Fetcher"]
     CreateBuilder --> AnalyzeSRPM["Анализ SRPM<br/>rpm2cpio + парсинг .spec"]
     AnalyzeSRPM --> ExtractBR["Извлечение BuildRequires"]
@@ -470,7 +470,7 @@ sequenceDiagram
     participant Koji as Koji Hub
     participant FKoji as Fedora Koji
 
-    User->>CLI: vibebuild fedora-target pkg.src.rpm
+    User->>CLI: vibebuild pkg.src.rpm<br/>(target из ~/.koji/config)
     CLI->>Builder: build_with_deps(srpm_path)
 
     Builder->>Analyzer: get_package_info_from_srpm(srpm)
@@ -783,9 +783,13 @@ graph TB
 ### Основные команды
 
 ```bash
-# Одна команда: скачать SRPM по имени и собрать (Fedora 43)
-vibebuild fedora-43 python3
-vibebuild fedora-43 python-requests
+# Одна команда: target из ~/.koji/config
+vibebuild python-requests
+vibebuild python3
+
+# Явный target (или если target не в конфиге)
+vibebuild fedora-target python-requests
+vibebuild fedora-target python3
 
 # Сборка по пути к файлу
 vibebuild fedora-target my-package-1.0-1.fc40.src.rpm
@@ -800,7 +804,8 @@ vibebuild --analyze-only my-package.src.rpm
 vibebuild --download-only python-requests
 
 # Dry run -- показать план сборки (srpm: путь или имя пакета)
-vibebuild --dry-run fedora-43 python-requests
+vibebuild --dry-run python-requests             # target из ~/.koji/config
+vibebuild --dry-run fedora-43 python-requests   # явный target
 vibebuild --dry-run fedora-target my-package.src.rpm
 
 # Сборка без разрешения зависимостей (аналог koji build)

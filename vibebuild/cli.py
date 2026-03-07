@@ -3,15 +3,18 @@
 VibeBuild CLI - Koji extension for automatic dependency resolution.
 
 Usage:
+    vibebuild [OPTIONS] SRPM
     vibebuild [OPTIONS] TARGET SRPM
 
     SRPM can be a path to a .src.rpm file or a package name (e.g. python3).
     If a package name is given, the SRPM is downloaded from Koji and then built.
+    When TARGET is omitted, it is read from 'target' key in ~/.koji/config [koji].
 
 Examples:
-    vibebuild fedora-43 python3
-    vibebuild fedora-43 my-package.src.rpm
-    vibebuild --scratch fedora-43 python-requests
+    vibebuild python-requests
+    vibebuild fedora-target python3
+    vibebuild fedora-target my-package.src.rpm
+    vibebuild --scratch fedora-target python-requests
     vibebuild --server https://my-koji/kojihub fedora-target pkg.src.rpm
 """
 
@@ -33,12 +36,13 @@ from vibebuild.resolver import DependencyResolver, KojiClient
 
 
 def load_koji_config() -> dict[str, Optional[str]]:
-    """Load server, weburl, cert, serverca from ~/.koji/config and /etc/koji.conf."""
+    """Load server, weburl, cert, serverca, target from ~/.koji/config and /etc/koji.conf."""
     out: dict[str, Optional[str]] = {
         "server": None,
         "web_url": None,
         "cert": None,
         "serverca": None,
+        "target": None,
     }
     config = configparser.ConfigParser()
     for path in [
@@ -59,6 +63,8 @@ def load_koji_config() -> dict[str, Optional[str]]:
                     out["cert"] = os.path.expanduser(s["cert"].strip())
                 if s.get("serverca") and not out["serverca"]:
                     out["serverca"] = os.path.expanduser(s["serverca"].strip())
+                if s.get("target") and not out["target"]:
+                    out["target"] = s["target"].strip()
         except (configparser.Error, OSError):
             pass
     return out
@@ -101,13 +107,18 @@ class _HelpAllArgumentParser(argparse.ArgumentParser):
     def format_help(self) -> str:
         if "--help-all" in sys.argv:
             return super().format_help()
-        usage = self.format_usage()
         short = (
             f"{self.description}\n\n"
-            "usage: vibebuild [-h] [--help-all] [-v] [-q] [--analyze-only | --download-only | --dry-run]\n"
-            "                 [--scratch] [--no-deps] [--server URL]\n"
-            "                 [target] [srpm]\n\n"
-            "  srpm  Path to .src.rpm or package name (e.g. python3); if name, download then build.\n\n"
+            "usage: vibebuild [OPTIONS] SRPM\n"
+            "       vibebuild [OPTIONS] TARGET SRPM\n\n"
+            "  SRPM    Path to .src.rpm or package name (e.g. python-requests);\n"
+            "          if a name, SRPM is downloaded from Fedora then built.\n"
+            "  TARGET  Build target (e.g. fedora-target).\n"
+            "          If omitted, read from 'target' in ~/.koji/config [koji].\n\n"
+            "Examples:\n"
+            "  vibebuild python-requests\n"
+            "  vibebuild fedora-target python-requests\n"
+            "  vibebuild --scratch fedora-target my-pkg.src.rpm\n\n"
             "Modes:\n"
             "  --analyze-only     Only analyze dependencies, do not build\n"
             "  --download-only    Only download SRPM, do not build\n"
@@ -135,7 +146,10 @@ def create_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Build package with automatic dependency resolution
+  # Build package (target from ~/.koji/config)
+  vibebuild python-requests
+
+  # Build with explicit target
   vibebuild fedora-target my-package-1.0-1.fc40.src.rpm
 
   # Scratch build (not tagged)
@@ -499,7 +513,12 @@ def cmd_build(
 
 
 def main(args: Optional[list[str]] = None) -> int:
-    """Main entry point."""
+    """Main entry point.
+
+    Positional argument resolution:
+      vibebuild SRPM          -- target is read from ~/.koji/config [koji]
+      vibebuild TARGET SRPM   -- explicit target (backwards-compatible)
+    """
     parser = create_parser()
     opts = parser.parse_args(args)
 
@@ -529,12 +548,33 @@ def main(args: Optional[list[str]] = None) -> int:
             ml_model_path=getattr(opts, "ml_model", None),
         )
 
-    if not opts.target or not opts.srpm:
-        parser.error("TARGET and SRPM (or package name) are required for building")
+    # Resolve target and srpm from positional arguments:
+    #   vibebuild SRPM          -> target from ~/.koji/config
+    #   vibebuild TARGET SRPM   -> explicit target (backwards-compatible)
+    koji_cfg = load_koji_config()
+    if opts.target and opts.srpm:
+        target = opts.target
+        srpm_arg = opts.srpm
+    elif opts.target and not opts.srpm:
+        srpm_arg = opts.target
+        target = koji_cfg.get("target")
+    else:
+        target = None
+        srpm_arg = None
+
+    if not srpm_arg:
+        parser.error("SRPM (or package name) is required for building")
+
+    if not target:
+        parser.error(
+            "Build target not specified.\n"
+            "  Option 1: vibebuild TARGET PACKAGE\n"
+            "  Option 2: Add 'target = fedora-target' to ~/.koji/config under [koji]"
+        )
 
     try:
         srpm_path = ensure_srpm_path(
-            opts.srpm,
+            srpm_arg,
             opts.download_dir,
             opts.no_ssl_verify,
             getattr(opts, "no_ml", False),
@@ -545,7 +585,7 @@ def main(args: Optional[list[str]] = None) -> int:
         return 1
 
     return cmd_build(
-        target=opts.target,
+        target=target,
         srpm_path=srpm_path,
         server=opts.server,
         web_url=opts.web_url,

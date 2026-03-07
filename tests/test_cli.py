@@ -463,9 +463,13 @@ class TestMain:
 
         assert exc_info.value.code == 2
 
-    def test_main_build_requires_target_and_srpm(self):
-        with pytest.raises(SystemExit) as exc_info:
-            main(["only-target"])
+    def test_main_single_arg_without_config_target_fails(self):
+        """Single positional arg with no target in config should exit with error."""
+        with patch("vibebuild.cli.load_koji_config", return_value={
+            "server": None, "web_url": None, "cert": None, "serverca": None, "target": None
+        }):
+            with pytest.raises(SystemExit) as exc_info:
+                main(["only-package"])
 
         assert exc_info.value.code == 2
 
@@ -823,3 +827,40 @@ class TestMainEdgeCases:
             sys.argv = original_argv
 
         assert result == 0
+
+    def test_main_single_arg_uses_config_target(self, tmp_path):
+        """Single positional arg should use target from koji config."""
+        srpm = tmp_path / "test.src.rpm"
+        srpm.write_text("fake srpm")
+
+        with patch("vibebuild.cli.load_koji_config", return_value={
+            "server": None, "web_url": None, "cert": None, "serverca": None,
+            "target": "fedora-target"
+        }):
+            with patch("vibebuild.cli.ensure_srpm_path", return_value=str(srpm)):
+                with patch("vibebuild.cli.cmd_build") as mock_cmd:
+                    mock_cmd.return_value = 0
+                    result = main([str(srpm)])
+
+        assert result == 0
+        mock_cmd.assert_called_once()
+        call_kwargs = mock_cmd.call_args
+        assert call_kwargs.kwargs["target"] == "fedora-target"
+
+    def test_main_two_args_explicit_target(self, tmp_path):
+        """Two positional args should use first as target, second as srpm."""
+        srpm = tmp_path / "test.src.rpm"
+        srpm.write_text("fake srpm")
+
+        with patch("vibebuild.cli.load_koji_config", return_value={
+            "server": None, "web_url": None, "cert": None, "serverca": None,
+            "target": "config-target"
+        }):
+            with patch("vibebuild.cli.ensure_srpm_path", return_value=str(srpm)):
+                with patch("vibebuild.cli.cmd_build") as mock_cmd:
+                    mock_cmd.return_value = 0
+                    result = main(["explicit-target", str(srpm)])
+
+        assert result == 0
+        mock_cmd.assert_called_once()
+        assert mock_cmd.call_args.kwargs["target"] == "explicit-target"

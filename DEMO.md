@@ -3,6 +3,7 @@
 ## Введение
 
 **VibeBuild** — расширение системы сборки [Koji](https://koji.fedoraproject.org/) командой `vibebuild`.
+Одна команда `vibebuild <пакет>` запускает полный цикл: скачивание SRPM, разрешение зависимостей и сборку.
 В отличие от стандартной команды `koji build`, которая собирает один пакет и падает при отсутствии зависимостей, VibeBuild:
 
 - **Автоматически разрешает зависимости** — находит недостающие `BuildRequires`, скачивает их SRPM из Koji и строит DAG (граф зависимостей) для правильного порядка сборки
@@ -156,6 +157,11 @@ Missing dependencies (5):
 Показать порядок сборки без реальной сборки. Для быстрой демонстрации рекомендуется использовать пакет с небольшим числом зависимостей:
 
 ```bash
+# Если target = f42 прописан в ~/.koji/config:
+vibebuild --dry-run --build-tag f42-build \
+    /tmp/vibebuild/python-chardet/python-chardet-5.2.0-16.fc42.src.rpm
+
+# Явный target (прежняя форма):
 vibebuild --dry-run --build-tag f42-build f42 \
     /tmp/vibebuild/python-chardet/python-chardet-5.2.0-16.fc42.src.rpm
 ```
@@ -175,6 +181,11 @@ VibeBuild в этом режиме:
 При наличии аутентификации в Fedora Koji (FAS) можно выполнить scratch-сборку:
 
 ```bash
+# Если target = f42 прописан в ~/.koji/config:
+vibebuild --scratch --build-tag f42-build \
+    /tmp/vibebuild/python-requests/python-requests-2.32.3-4.fc42.src.rpm
+
+# Явный target (прежняя форма):
 vibebuild --scratch --build-tag f42-build f42 \
     /tmp/vibebuild/python-requests/python-requests-2.32.3-4.fc42.src.rpm
 ```
@@ -209,7 +220,8 @@ print(r.resolve('pkgconfig(libxml-2.0)'))   # → libxml2-devel
 | Сборка | `vibebuild --build-tag f42-build f42 <path.src.rpm>` | Полная сборка с разрешением зависимостей |
 | Scratch-сборка | `vibebuild --scratch --build-tag f42-build f42 <path.src.rpm>` | Тестовая сборка без тегирования |
 | Без зависимостей | `vibebuild --no-deps f42 <path.src.rpm>` | Сборка без разрешения зависимостей |
-| По имени пакета | `vibebuild f42 python-requests` | Скачать SRPM по имени и собрать |
+| По имени пакета | `vibebuild python-requests` | Скачать SRPM по имени и собрать (target из ~/.koji/config) |
+| С явным target | `vibebuild fedora-target python-requests` | Скачать SRPM по имени и собрать (явный target) |
 
 ---
 
