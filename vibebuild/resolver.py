@@ -1,6 +1,7 @@
 """
 Dependency resolver - checks dependencies in Koji and builds DAG.
 """
+from __future__ import annotations
 
 import os
 import subprocess

@@ -1,6 +1,7 @@
 """Tests for vibebuild.cli module."""
 
 import pytest
+from pathlib import Path
 from unittest.mock import Mock, patch, MagicMock
 import sys
 from io import StringIO
@@ -529,7 +530,14 @@ class TestLoadKojiConfig:
         config_path = koji_dir / "config"
         config_path.write_text("[koji]\nserver = https://my-koji/kojihub\nweburl = https://my-koji/koji\ncert = ~/client.pem\nserverca = ~/serverca.pem\n")
 
-        with patch("vibebuild.cli.Path.home", return_value=tmp_path):
+        _orig_exists = Path.exists
+        def _fake_exists(self):
+            if str(self) == "/etc/koji.conf":
+                return False
+            return _orig_exists(self)
+
+        with patch("vibebuild.cli.Path.home", return_value=tmp_path), \
+             patch.object(Path, "exists", _fake_exists):
             result = load_koji_config()
 
         assert isinstance(result, dict)
@@ -563,7 +571,14 @@ class TestLoadKojiConfig:
         config_path = koji_dir / "config"
         config_path.write_text("[other]\nfoo = bar\n")
 
-        with patch("vibebuild.cli.Path.home", return_value=tmp_path):
+        _orig_exists = Path.exists
+        def _fake_exists(self):
+            if str(self) == "/etc/koji.conf":
+                return False
+            return _orig_exists(self)
+
+        with patch("vibebuild.cli.Path.home", return_value=tmp_path), \
+             patch.object(Path, "exists", _fake_exists):
             result = load_koji_config()
 
         assert result["server"] is None
@@ -575,7 +590,14 @@ class TestLoadKojiConfig:
         config_path = koji_dir / "config"
         config_path.write_text("[koji]\n")
 
-        with patch("vibebuild.cli.Path.home", return_value=tmp_path):
+        _orig_exists = Path.exists
+        def _fake_exists(self):
+            if str(self) == "/etc/koji.conf":
+                return False
+            return _orig_exists(self)
+
+        with patch("vibebuild.cli.Path.home", return_value=tmp_path), \
+             patch.object(Path, "exists", _fake_exists):
             result = load_koji_config()
 
         assert result["server"] is None
