@@ -77,12 +77,14 @@ class TestSRPMFetcher:
         assert result == str(cached_path)
         mock_subprocess_run.assert_not_called()
 
-    def test_download_srpm_cache_miss_if_file_deleted(self, tmp_path, mock_subprocess_run):
+    def test_download_srpm_cache_miss_if_file_deleted(self, tmp_path, mocker):
         fetcher = SRPMFetcher(download_dir=str(tmp_path))
         fetcher._cache["test-pkg-latest"] = "/nonexistent/path.src.rpm"
-        mock_subprocess_run.side_effect = [
-            Mock(returncode=0, stdout="test-pkg-1.0-1.fc40\n", stderr=""),
-            Mock(returncode=0, stdout="Downloading...\n", stderr=""),
+        mock_server = MagicMock()
+        mocker.patch("xmlrpc.client.ServerProxy", return_value=mock_server)
+        mock_server.getBuildTarget.return_value = {"dest_tag_name": "f42"}
+        mock_server.getLatestBuilds.return_value = [
+            {"nvr": "test-pkg-1.0-1.fc40", "name": "test-pkg", "version": "1.0", "release": "1.fc40"}
         ]
         pkg_dir = tmp_path / "test-pkg"
         pkg_dir.mkdir()
@@ -93,10 +95,13 @@ class TestSRPMFetcher:
 
         assert result == str(srpm_file)
 
-    def test_download_srpm_from_koji_with_version(self, tmp_path, mock_subprocess_run):
+    def test_download_srpm_from_koji_with_version(self, tmp_path, mocker):
         fetcher = SRPMFetcher(download_dir=str(tmp_path))
-        mock_subprocess_run.return_value.returncode = 0
-        mock_subprocess_run.return_value.stdout = "Downloaded\n"
+        mock_server = MagicMock()
+        mocker.patch("xmlrpc.client.ServerProxy", return_value=mock_server)
+        mock_server.getBuild.return_value = {
+            "nvr": "test-pkg-1.0-1.fc40", "name": "test-pkg", "version": "1.0", "release": "1.fc40"
+        }
         pkg_dir = tmp_path / "test-pkg"
         pkg_dir.mkdir()
         srpm_file = pkg_dir / "test-pkg-1.0-1.fc40.src.rpm"
@@ -107,11 +112,13 @@ class TestSRPMFetcher:
         assert "test-pkg" in result
         assert result.endswith(".src.rpm")
 
-    def test_download_srpm_from_koji_latest(self, tmp_path, mock_subprocess_run):
+    def test_download_srpm_from_koji_latest(self, tmp_path, mocker):
         fetcher = SRPMFetcher(download_dir=str(tmp_path))
-        mock_subprocess_run.side_effect = [
-            Mock(returncode=0, stdout="test-pkg-2.0-1.fc42  fedora-build\n", stderr=""),
-            Mock(returncode=0, stdout="Downloaded\n", stderr=""),
+        mock_server = MagicMock()
+        mocker.patch("xmlrpc.client.ServerProxy", return_value=mock_server)
+        mock_server.getBuildTarget.return_value = {"dest_tag_name": "f42"}
+        mock_server.getLatestBuilds.return_value = [
+            {"nvr": "test-pkg-2.0-1.fc42", "name": "test-pkg", "version": "2.0", "release": "1.fc42"}
         ]
         pkg_dir = tmp_path / "test-pkg"
         pkg_dir.mkdir()
@@ -122,12 +129,15 @@ class TestSRPMFetcher:
 
         assert result == str(srpm_file)
 
-    def test_download_srpm_fallback_to_rawhide(self, tmp_path, mock_subprocess_run):
+    def test_download_srpm_fallback_to_rawhide(self, tmp_path, mocker):
         fetcher = SRPMFetcher(download_dir=str(tmp_path))
-        mock_subprocess_run.side_effect = [
-            Mock(returncode=1, stdout="", stderr="Not found"),
-            Mock(returncode=0, stdout="test-pkg-3.0-1.fc42  rawhide\n", stderr=""),
-            Mock(returncode=0, stdout="Downloaded\n", stderr=""),
+        mock_server = MagicMock()
+        mocker.patch("xmlrpc.client.ServerProxy", return_value=mock_server)
+        mock_server.getBuildTarget.return_value = {"dest_tag_name": "f42"}
+        # First call (f42 tag) returns empty, second call (rawhide) returns build
+        mock_server.getLatestBuilds.side_effect = [
+            [],  # f42 tag
+            [{"nvr": "test-pkg-3.0-1.fc42", "name": "test-pkg", "version": "3.0", "release": "1.fc42"}],  # rawhide
         ]
         pkg_dir = tmp_path / "test-pkg"
         pkg_dir.mkdir()
@@ -138,25 +148,30 @@ class TestSRPMFetcher:
 
         assert result == str(srpm_file)
 
-    def test_download_srpm_raises_not_found(self, tmp_path, mock_subprocess_run):
+    def test_download_srpm_raises_not_found(self, tmp_path, mocker):
         fetcher = SRPMFetcher(download_dir=str(tmp_path))
-        mock_subprocess_run.return_value.returncode = 1
-        mock_subprocess_run.return_value.stdout = ""
-        mock_subprocess_run.return_value.stderr = "Not found"
+        mock_server = MagicMock()
+        mocker.patch("xmlrpc.client.ServerProxy", return_value=mock_server)
+        mock_server.getBuildTarget.return_value = {"dest_tag_name": "f42"}
+        mock_server.getLatestBuilds.return_value = []
 
         with pytest.raises(SRPMNotFoundError, match="Could not find SRPM"):
             fetcher.download_srpm("nonexistent-pkg")
 
-    def test_download_srpm_no_srpm_after_download(self, tmp_path, mock_subprocess_run):
+    def test_download_srpm_no_srpm_after_download(self, tmp_path, mocker):
         fetcher = SRPMFetcher(download_dir=str(tmp_path))
-        mock_subprocess_run.side_effect = [
-            Mock(returncode=0, stdout="test-pkg-1.0-1.fc40\n", stderr=""),
-            Mock(returncode=0, stdout="Downloaded\n", stderr=""),
+        mock_server = MagicMock()
+        mocker.patch("xmlrpc.client.ServerProxy", return_value=mock_server)
+        mock_server.getBuildTarget.return_value = {"dest_tag_name": "f42"}
+        mock_server.getLatestBuilds.return_value = [
+            {"nvr": "test-pkg-1.0-1.fc40", "name": "test-pkg", "version": "1.0", "release": "1.fc40"}
         ]
+        mocker.patch.object(fetcher, '_download_file')
         pkg_dir = tmp_path / "test-pkg"
         pkg_dir.mkdir()
+        # Don't create the srpm file - simulates download failure
 
-        with pytest.raises(SRPMNotFoundError, match="Could not find SRPM for test-pkg"):
+        with pytest.raises(SRPMNotFoundError, match="Failed to download SRPM"):
             fetcher.download_srpm("test-pkg")
 
     def test_search_fedora_src_success(self, tmp_path, mocker):
@@ -344,13 +359,16 @@ class TestSRPMFetcherGetEnv:
 
 
 class TestSRPMFetcherDownloadWithNameResolver:
-    def test_download_srpm_with_name_resolver(self, tmp_path, mock_subprocess_run):
+    def test_download_srpm_with_name_resolver(self, tmp_path, mocker):
         """download_srpm with name_resolver should try multiple candidates."""
         mock_resolver = Mock()
         mock_resolver.get_download_candidates.return_value = ["python-requests", "python3-requests"]
         fetcher = SRPMFetcher(download_dir=str(tmp_path), name_resolver=mock_resolver)
-        mock_subprocess_run.return_value.returncode = 0
-        mock_subprocess_run.return_value.stdout = "Downloaded\n"
+        mock_server = MagicMock()
+        mocker.patch("xmlrpc.client.ServerProxy", return_value=mock_server)
+        mock_server.getBuild.return_value = {
+            "nvr": "python-requests-2.0-1", "name": "python-requests", "version": "2.0", "release": "1"
+        }
         pkg_dir = tmp_path / "python-requests"
         pkg_dir.mkdir()
         srpm_file = pkg_dir / "python-requests-2.0-1.src.rpm"
@@ -363,43 +381,51 @@ class TestSRPMFetcherDownloadWithNameResolver:
 
 
 class TestSRPMFetcherKojiEdgeCases:
-    def test_koji_cli_not_found(self, tmp_path, mock_subprocess_run):
-        """FileNotFoundError when koji CLI not installed."""
+    def test_koji_connection_error(self, tmp_path, mocker):
+        """Connection error when connecting to Koji XML-RPC."""
         fetcher = SRPMFetcher(download_dir=str(tmp_path))
         fetcher.sources = [
             SRPMSource(name="koji", base_url="https://koji.example.com",
                        koji_server="https://koji.example.com/kojihub", priority=1)
         ]
-        mock_subprocess_run.side_effect = FileNotFoundError("koji not found")
-
-        with pytest.raises(SRPMNotFoundError, match="koji CLI not found"):
-            fetcher.download_srpm("test-pkg")
-
-    def test_koji_output_no_package_name(self, tmp_path, mock_subprocess_run):
-        """Koji output without matching package name."""
-        fetcher = SRPMFetcher(download_dir=str(tmp_path))
-        fetcher.sources = [
-            SRPMSource(name="koji", base_url="https://koji.example.com",
-                       koji_server="https://koji.example.com/kojihub", priority=1)
-        ]
-        mock_subprocess_run.side_effect = [
-            Mock(returncode=0, stdout="other-pkg-1.0-1.fc40  tag\n", stderr=""),
-        ]
+        mock_server = MagicMock()
+        mocker.patch("xmlrpc.client.ServerProxy", return_value=mock_server)
+        mock_server.getBuildTarget.side_effect = Exception("connection refused")
+        mock_server.getTag.side_effect = Exception("connection refused")
+        mock_server.getLatestBuilds.side_effect = Exception("connection refused")
 
         with pytest.raises(SRPMNotFoundError, match="Could not find SRPM"):
             fetcher.download_srpm("test-pkg")
 
-    def test_download_command_failure(self, tmp_path, mock_subprocess_run):
-        """Download command failure should raise."""
+    def test_koji_package_not_found(self, tmp_path, mocker):
+        """Koji returns empty builds for package."""
         fetcher = SRPMFetcher(download_dir=str(tmp_path))
         fetcher.sources = [
             SRPMSource(name="koji", base_url="https://koji.example.com",
                        koji_server="https://koji.example.com/kojihub", priority=1)
         ]
-        mock_subprocess_run.side_effect = [
-            Mock(returncode=0, stdout="test-pkg-1.0-1.fc40  tag\n", stderr=""),
-            Mock(returncode=1, stdout="", stderr="download error"),
+        mock_server = MagicMock()
+        mocker.patch("xmlrpc.client.ServerProxy", return_value=mock_server)
+        mock_server.getBuildTarget.return_value = {"dest_tag_name": "f42"}
+        mock_server.getLatestBuilds.return_value = []
+
+        with pytest.raises(SRPMNotFoundError, match="Could not find SRPM"):
+            fetcher.download_srpm("test-pkg")
+
+    def test_download_file_failure(self, tmp_path, mocker):
+        """Download failure should raise."""
+        fetcher = SRPMFetcher(download_dir=str(tmp_path))
+        fetcher.sources = [
+            SRPMSource(name="koji", base_url="https://koji.example.com",
+                       koji_server="https://koji.example.com/kojihub", priority=1)
         ]
+        mock_server = MagicMock()
+        mocker.patch("xmlrpc.client.ServerProxy", return_value=mock_server)
+        mock_server.getBuildTarget.return_value = {"dest_tag_name": "f42"}
+        mock_server.getLatestBuilds.return_value = [
+            {"nvr": "test-pkg-1.0-1.fc40", "name": "test-pkg", "version": "1.0", "release": "1.fc40"}
+        ]
+        mocker.patch.object(fetcher, '_download_file', side_effect=Exception("download error"))
 
         with pytest.raises(SRPMNotFoundError, match="Could not find SRPM"):
             fetcher.download_srpm("test-pkg")

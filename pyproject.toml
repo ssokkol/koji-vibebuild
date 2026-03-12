@@ -10,7 +10,7 @@ readme = "README.md"
 license = {text = "MIT"}
 requires-python = ">=3.9"
 authors = [
-    {name = "VibeBuild Team", email = "vibebuild@example.com"}
+    {name = "VibeBuild Team"}
 ]
 keywords = ["koji", "rpm", "srpm", "build", "fedora", "dependency"]
 classifiers = [

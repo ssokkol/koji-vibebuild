@@ -82,7 +82,11 @@ class TestCreateParser:
         assert args.server == "https://custom.koji/kojihub"
 
     def test_parser_server_default(self):
-        parser = create_parser()
+        with patch("vibebuild.cli.load_koji_config", return_value={
+            "server": None, "web_url": None, "cert": None,
+            "serverca": None, "target": None, "build_tag": None,
+        }):
+            parser = create_parser()
 
         args = parser.parse_args(["target", "pkg.src.rpm"])
 
@@ -117,7 +121,11 @@ class TestCreateParser:
         assert args.build_tag == "custom-build"
 
     def test_parser_build_tag_default(self):
-        parser = create_parser()
+        with patch("vibebuild.cli.load_koji_config", return_value={
+            "server": None, "web_url": None, "cert": None,
+            "serverca": None, "target": None, "build_tag": None,
+        }):
+            parser = create_parser()
 
         args = parser.parse_args(["target", "pkg.src.rpm"])
 

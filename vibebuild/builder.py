@@ -82,6 +82,7 @@ class KojiBuilder:
         no_name_resolution: bool = False,
         no_ml: bool = False,
         ml_model_path: Optional[str] = None,
+        fedora_release: str = "rawhide",
     ):
         self.koji_server = koji_server
         self.koji_web_url = koji_web_url
@@ -124,6 +125,7 @@ class KojiBuilder:
 
         self.fetcher = SRPMFetcher(
             download_dir=download_dir,
+            fedora_release=fedora_release,
             no_ssl_verify=no_ssl_verify,
             name_resolver=self.name_resolver,
         )
@@ -146,8 +148,8 @@ class KojiBuilder:
 
         if self.cert:
             cmd.append(f"--cert={self.cert}")
-        if self.serverca:
-            cmd.append(f"--serverca={self.serverca}")
+        # Note: --serverca is not supported on RHEL9/older koji CLI.
+        # The serverca is read from ~/.koji/config instead.
 
         cmd.extend(args)
 
@@ -160,16 +162,18 @@ class KojiBuilder:
         except subprocess.TimeoutExpired:
             raise KojiConnectionError(f"Command timed out: {' '.join(args)}")
 
-    def build_package(self, srpm_path: str, wait: bool = True) -> BuildTask:
+    def _submit_build(self, srpm_path: str) -> BuildTask:
         """
-        Submit a single package build to Koji.
+        Submit a single package build to Koji (no waiting).
+
+        Registers the package with add-pkg, submits with --nowait,
+        and returns a BuildTask with status BUILDING.
 
         Args:
             srpm_path: Path to SRPM file
-            wait: Whether to wait for build to complete
 
         Returns:
-            BuildTask with result information
+            BuildTask with task_id and status BUILDING
         """
         srpm_path = Path(srpm_path)
         if not srpm_path.exists():
@@ -184,18 +188,29 @@ class KojiBuilder:
             nvr=package_info.nvr,
         )
 
-        cmd_args = ["build"]
+        # Ensure the package is registered in the destination tag
+        dest_tag = self.target  # e.g. "f42"
+        add_result = self._run_koji(
+            "add-pkg", dest_tag, package_info.name, "--owner=kojiadmin"
+        )
+        if add_result.returncode != 0:
+            # Ignore "already exists" errors
+            if "already exists" not in (add_result.stderr or ""):
+                logger.warning(
+                    f"add-pkg failed (may already exist): {add_result.stderr}"
+                )
+
+        # Always submit with --nowait
+        cmd_args = ["build", "--nowait"]
 
         if self.scratch:
             cmd_args.append("--scratch")
-        if not wait or self.nowait:
-            cmd_args.append("--nowait")
 
         cmd_args.extend([self.target, str(srpm_path)])
 
         logger.info(f"Starting build: {package_info.nvr}")
 
-        result = self._run_koji(*cmd_args, timeout=3600 if wait else 60)
+        result = self._run_koji(*cmd_args, timeout=60)
 
         if result.returncode != 0:
             task.status = BuildStatus.FAILED
@@ -214,14 +229,161 @@ class KojiBuilder:
                 except ValueError:
                     pass
 
-        if wait and not self.nowait:
-            task.status = BuildStatus.COMPLETE
-        else:
-            task.status = BuildStatus.BUILDING
-
         logger.info(f"Build submitted: task_id={task.task_id}")
+        task.status = BuildStatus.BUILDING
 
         return task
+
+    def build_package(self, srpm_path: str, wait: bool = True) -> BuildTask:
+        """
+        Submit a single package build to Koji.
+
+        Args:
+            srpm_path: Path to SRPM file
+            wait: Whether to wait for build to complete
+
+        Returns:
+            BuildTask with result information
+        """
+        task = self._submit_build(srpm_path)
+
+        if wait and not self.nowait and task.task_id:
+            task.status = self._poll_build(task.task_id, task.nvr or task.package_name)
+        elif wait and not self.nowait:
+            task.status = BuildStatus.COMPLETE
+
+        return task
+
+    def _poll_build(self, task_id: int, nvr: str, timeout: int = 7200, interval: int = 30) -> BuildStatus:
+        """Poll a build task with progress logging."""
+        start = time.time()
+        last_state = ""
+
+        while time.time() - start < timeout:
+            result = self._run_koji("taskinfo", str(task_id))
+            if result.returncode != 0:
+                logger.warning(f"  [{nvr}] Could not get task info")
+                time.sleep(interval)
+                continue
+
+            output = result.stdout
+            # Parse current state
+            state = "unknown"
+            for line in output.split("\n"):
+                if line.startswith("State:"):
+                    state = line.split(":", 1)[1].strip().lower()
+                    break
+
+            # Parse subtasks for more detail
+            subtasks = []
+            sub_result = self._run_koji("list-tasks", f"--parent={task_id}")
+            if sub_result.returncode == 0:
+                for line in sub_result.stdout.strip().split("\n"):
+                    if line and not line.startswith("ID"):
+                        parts = line.split()
+                        if len(parts) >= 5:
+                            sub_state = parts[3]
+                            sub_name = " ".join(parts[5:])
+                            subtasks.append(f"{sub_name} [{sub_state}]")
+
+            elapsed = int(time.time() - start)
+            minutes, seconds = divmod(elapsed, 60)
+
+            if subtasks:
+                current = ", ".join(subtasks[:3])
+                progress = f"  [{nvr}] {minutes}m{seconds:02d}s — {current}"
+            else:
+                progress = f"  [{nvr}] {minutes}m{seconds:02d}s — {state}"
+
+            if progress != last_state:
+                logger.info(progress)
+                last_state = progress
+
+            if state in ("closed", "complete"):
+                return BuildStatus.COMPLETE
+            elif state == "failed":
+                logger.error(f"  [{nvr}] Build FAILED (task {task_id})")
+                return BuildStatus.FAILED
+            elif state == "canceled":
+                return BuildStatus.CANCELED
+
+            time.sleep(interval)
+
+        logger.error(f"  [{nvr}] Build timed out after {timeout}s")
+        return BuildStatus.FAILED
+
+    def _poll_builds(self, tasks: list, timeout: int = 7200, interval: int = 30) -> None:
+        """Poll multiple build tasks simultaneously until all complete or timeout.
+
+        Args:
+            tasks: List of BuildTask objects with task_id set
+            timeout: Maximum time to wait in seconds
+            interval: Seconds between polling sweeps
+        """
+        pending = {t.task_id: t for t in tasks if t.task_id}
+        if not pending:
+            return
+
+        start = time.time()
+
+        while pending and time.time() - start < timeout:
+            completed_ids = []
+            for task_id, task in pending.items():
+                result = self._run_koji("taskinfo", str(task_id))
+                if result.returncode != 0:
+                    continue
+
+                state = "unknown"
+                for line in result.stdout.split("\n"):
+                    if line.startswith("State:"):
+                        state = line.split(":", 1)[1].strip().lower()
+                        break
+
+                if state in ("closed", "complete"):
+                    task.status = BuildStatus.COMPLETE
+                    completed_ids.append(task_id)
+                elif state == "failed":
+                    task.status = BuildStatus.FAILED
+                    task.error_message = f"Build task {task_id} failed"
+                    completed_ids.append(task_id)
+                elif state == "canceled":
+                    task.status = BuildStatus.CANCELED
+                    completed_ids.append(task_id)
+
+            for tid in completed_ids:
+                del pending[tid]
+
+            if pending:
+                elapsed = int(time.time() - start)
+                minutes, seconds = divmod(elapsed, 60)
+                names = ", ".join(t.package_name for t in pending.values())
+                logger.info(f"  [{minutes}m{seconds:02d}s] Waiting for: {names}")
+                time.sleep(interval)
+
+        # Timeout remaining tasks
+        for task in pending.values():
+            task.status = BuildStatus.FAILED
+            task.error_message = f"Build timed out after {timeout}s"
+            logger.error(f"  [{task.package_name}] Build timed out after {timeout}s")
+
+    def _ensure_repo_ready(self) -> None:
+        """Ensure a repo exists for the build tag, creating one if needed."""
+        result = self._run_koji("list-tasks")
+        has_newrepo = result.returncode == 0 and "newRepo" in result.stdout
+
+        if not has_newrepo:
+            regen = self._run_koji("call", "newRepo", self.build_tag)
+            if regen.returncode == 0:
+                logger.info(f"Triggered newRepo for {self.build_tag}")
+
+        logger.info(f"Waiting for repo to be ready: {self.build_tag}")
+        wait_result = self._run_koji(
+            "wait-repo", self.build_tag, "--timeout=1800", timeout=1860
+        )
+        if wait_result.returncode == 0:
+            logger.info("Repo is ready")
+        else:
+            logger.warning(f"wait-repo returned non-zero, proceeding anyway")
 
     def wait_for_repo(self, tag: Optional[str] = None, timeout: int = 1800) -> bool:
         """
@@ -237,6 +399,11 @@ class KojiBuilder:
         tag = tag or self.build_tag
 
         logger.info(f"Waiting for repo regeneration: {tag}")
+
+        # Trigger newRepo explicitly — some Koji setups don't auto-create it
+        regen_result = self._run_koji("call", "newRepo", tag)
+        if regen_result.returncode == 0:
+            logger.info(f"Triggered newRepo for {tag}")
 
         result = self._run_koji("wait-repo", tag, f"--timeout={timeout}", timeout=timeout + 60)
 
@@ -273,6 +440,9 @@ class KojiBuilder:
 
         logger.info(f"Starting vibebuild for: {srpm_path}")
 
+        # Ensure repo is ready before dependency resolution and builds
+        self._ensure_repo_ready()
+
         package_info = get_package_info_from_srpm(str(srpm_path))
         logger.info(f"Package: {package_info.nvr}")
 
@@ -303,6 +473,8 @@ class KojiBuilder:
             for level_idx, level in enumerate(build_chain):
                 logger.info(f"Building level {level_idx + 1}/{len(build_chain)}: {level}")
 
+                # Submit all packages in this level in parallel
+                level_tasks = []
                 for pkg_name in level:
                     if pkg_name == package_info.name:
                         continue
@@ -313,21 +485,33 @@ class KojiBuilder:
                         continue
 
                     try:
-                        task = self.build_package(node.srpm_path, wait=True)
+                        task = self._submit_build(node.srpm_path)
+                        level_tasks.append(task)
                         result.tasks.append(task)
-
-                        if task.status == BuildStatus.COMPLETE:
-                            result.built_packages.append(pkg_name)
-                        else:
-                            result.failed_packages.append(pkg_name)
-                            result.success = False
-
                     except Exception as e:
-                        logger.error(f"Failed to build {pkg_name}: {e}")
+                        logger.error(f"Failed to submit {pkg_name}: {e}")
                         result.failed_packages.append(pkg_name)
 
-                if level_idx < len(build_chain) - 1:
-                    self.wait_for_repo()
+                # Poll all submitted tasks simultaneously
+                if level_tasks:
+                    self._poll_builds(level_tasks)
+
+                    level_built = 0
+                    for task in level_tasks:
+                        if task.status == BuildStatus.COMPLETE:
+                            result.built_packages.append(task.package_name)
+                            level_built += 1
+                        else:
+                            result.failed_packages.append(task.package_name)
+                            result.success = False
+
+                    # Wait for repo between levels (not after last level)
+                    if level_built > 0 and level_idx < len(build_chain) - 1:
+                        self.wait_for_repo()
+
+        # Wait for repo once before target if any deps were built
+        if result.built_packages:
+            self.wait_for_repo()
 
         if result.success or not result.failed_packages:
             logger.info(f"Building target package: {package_info.nvr}")

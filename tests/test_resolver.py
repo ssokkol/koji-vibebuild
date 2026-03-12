@@ -392,7 +392,8 @@ class TestKojiClientRunCommand:
 
         call_args = mock_subprocess_run.call_args[0][0]
         assert "--cert=/path/cert.pem" in call_args
-        assert "--serverca=/path/ca.crt" in call_args
+        # --serverca is not passed on CLI (RHEL9 compat); read from ~/.koji/config
+        assert not any("--serverca" in a for a in call_args)
 
     def test_run_command_with_cert_only(self, mock_subprocess_run):
         """_run_koji_command with cert but no serverca."""
@@ -627,3 +628,122 @@ class TestGetBuildChainWithAvailableDep:
 
         assert len(result) >= 1
         assert "pkg-a" in result[0]
+
+
+class TestKojiClientHasExternalRepos:
+    def test_has_external_repos_true(self, mock_subprocess_run):
+        """has_external_repos returns True when external repos are configured."""
+        mock_subprocess_run.return_value.returncode = 0
+        mock_subprocess_run.return_value.stdout = (
+            "Tag                  Repo Name            URL\n"
+            "---                  ---------            ---\n"
+            "f42-build            fedora-42            http://kojipkgs.fedoraproject.org/repos/f42/\n"
+        )
+        mock_subprocess_run.return_value.stderr = ""
+        client = KojiClient()
+
+        assert client.has_external_repos("f42-build") is True
+
+    def test_has_external_repos_false_empty(self, mock_subprocess_run):
+        """has_external_repos returns False when no repos configured."""
+        mock_subprocess_run.return_value.returncode = 0
+        mock_subprocess_run.return_value.stdout = ""
+        mock_subprocess_run.return_value.stderr = ""
+        client = KojiClient()
+
+        assert client.has_external_repos("f42-build") is False
+
+    def test_has_external_repos_false_on_error(self, mock_subprocess_run):
+        """has_external_repos returns False on command error."""
+        mock_subprocess_run.return_value.returncode = 1
+        mock_subprocess_run.return_value.stdout = ""
+        mock_subprocess_run.return_value.stderr = "error"
+        client = KojiClient()
+
+        assert client.has_external_repos("f42-build") is False
+
+
+class TestDependencyResolverExternalRepos:
+    def test_check_external_repos_cached(self, mock_koji_client):
+        """_check_external_repos should cache the result."""
+        mock_koji_client.has_external_repos.return_value = True
+        resolver = DependencyResolver(koji_client=mock_koji_client, koji_tag="f42-build")
+
+        assert resolver._check_external_repos() is True
+        assert resolver._check_external_repos() is True
+        mock_koji_client.has_external_repos.assert_called_once()
+
+    def test_check_external_repos_exception(self, mock_koji_client):
+        """_check_external_repos should return False on exception."""
+        mock_koji_client.has_external_repos.side_effect = Exception("fail")
+        resolver = DependencyResolver(koji_client=mock_koji_client, koji_tag="f42-build")
+
+        assert resolver._check_external_repos() is False
+
+    def test_is_our_package_in_available(self, mock_koji_client):
+        """_is_our_package should return True for packages in available_packages."""
+        mock_koji_client.list_packages.return_value = ["my-pkg", "other-pkg"]
+        resolver = DependencyResolver(koji_client=mock_koji_client, koji_tag="f42-build")
+
+        assert resolver._is_our_package("my-pkg") is True
+        assert resolver._is_our_package("unknown-pkg") is False
+
+    def test_is_our_package_with_name_resolver(self, mock_koji_client):
+        """_is_our_package should try name_resolver for resolution."""
+        mock_koji_client.list_packages.return_value = ["python3-requests"]
+        mock_nr = Mock()
+        mock_nr.resolve.return_value = "python3-requests"
+        resolver = DependencyResolver(
+            koji_client=mock_koji_client, koji_tag="f42-build", name_resolver=mock_nr
+        )
+
+        assert resolver._is_our_package("python3dist(requests)") is True
+
+    def test_find_missing_deps_with_external_repos_skips_non_local(self, mock_koji_client):
+        """With external repos, deps NOT in local Koji are assumed available."""
+        # my-custom-pkg is registered but not built (package_exists returns False)
+        mock_koji_client.list_packages.return_value = ["my-custom-pkg"]
+        mock_koji_client.package_exists.return_value = False
+        mock_koji_client.has_external_repos.return_value = True
+        resolver = DependencyResolver(koji_client=mock_koji_client, koji_tag="f42-build")
+
+        result = resolver.find_missing_deps(["python3-devel", "gcc"])
+
+        # python3-devel and gcc are NOT in our local Koji -> available via external repos
+        assert "python3-devel" not in result
+        assert "gcc" not in result
+
+    def test_find_missing_deps_external_repos_registered_but_not_built(self, mock_koji_client):
+        """Registered package not yet built is still treated as available (registered = available)."""
+        mock_koji_client.list_packages.return_value = ["my-custom-pkg"]
+        mock_koji_client.package_exists.return_value = False
+        mock_koji_client.has_external_repos.return_value = True
+        resolver = DependencyResolver(koji_client=mock_koji_client, koji_tag="f42-build")
+
+        # my-custom-pkg is in available_packages (registered) so it's skipped early
+        result = resolver.find_missing_deps(["my-custom-pkg"])
+        assert "my-custom-pkg" not in result
+
+    def test_find_missing_deps_without_external_repos(self, mock_koji_client):
+        """Without external repos, all unbuilt deps are missing."""
+        mock_koji_client.list_packages.return_value = []
+        mock_koji_client.package_exists.return_value = False
+        mock_koji_client.has_external_repos.return_value = False
+        resolver = DependencyResolver(koji_client=mock_koji_client, koji_tag="f42-build")
+
+        result = resolver.find_missing_deps(["python3-devel"])
+
+        assert "python3-devel" in result
+
+    def test_find_missing_deps_external_repos_all_external(self, mock_koji_client):
+        """With external repos and no local packages, nothing is missing."""
+        mock_koji_client.list_packages.return_value = []
+        mock_koji_client.package_exists.return_value = False
+        mock_koji_client.has_external_repos.return_value = True
+        resolver = DependencyResolver(koji_client=mock_koji_client, koji_tag="f42-build")
+
+        result = resolver.find_missing_deps([
+            "python3-devel", "python3-setuptools", "python3-pip", "gcc"
+        ])
+
+        assert result == []

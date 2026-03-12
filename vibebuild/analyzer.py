@@ -91,6 +91,18 @@ class SpecAnalyzer:
         build_requires: list[BuildRequirement] = []
         source_urls: list[str] = []
 
+        # First pass: collect %global and %define macros
+        for line in lines:
+            stripped = line.strip()
+            if stripped.startswith("#"):
+                continue
+            if stripped.startswith("%global ") or stripped.startswith("%define "):
+                parts = stripped.split(None, 2)
+                if len(parts) >= 3:
+                    macro_name = parts[1]
+                    macro_value = self._expand_macros(parts[2].strip())
+                    self._macros[macro_name] = macro_value
+
         for line in lines:
             line = line.strip()
 

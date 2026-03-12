@@ -43,11 +43,12 @@ def load_koji_config() -> dict[str, Optional[str]]:
         "cert": None,
         "serverca": None,
         "target": None,
+        "build_tag": None,
     }
     config = configparser.ConfigParser()
     for path in [
-        Path("/etc/koji.conf"),
         Path.home() / ".koji" / "config",
+        Path("/etc/koji.conf"),
     ]:
         if not path.exists():
             continue
@@ -65,6 +66,8 @@ def load_koji_config() -> dict[str, Optional[str]]:
                     out["serverca"] = os.path.expanduser(s["serverca"].strip())
                 if s.get("target") and not out["target"]:
                     out["target"] = s["target"].strip()
+                if s.get("build_tag") and not out["build_tag"]:
+                    out["build_tag"] = s["build_tag"].strip()
         except (configparser.Error, OSError):
             pass
     return out
@@ -132,6 +135,16 @@ class _HelpAllArgumentParser(argparse.ArgumentParser):
             "Full list of options: vibebuild --help-all\n"
         )
         return short
+
+
+def detect_fedora_release(target: str) -> Optional[str]:
+    """Auto-detect Fedora release from build target name (e.g. 'f42' -> '42')."""
+    import re
+
+    m = re.match(r"^f(\d+)$", target)
+    if m:
+        return m.group(1)
+    return None
 
 
 def create_parser() -> argparse.ArgumentParser:
@@ -210,8 +223,8 @@ Examples:
     koji_group.add_argument(
         "--build-tag",
         metavar="TAG",
-        default="fedora-build",
-        help="Build tag for dependency checking",
+        default=koji_cfg.get("build_tag") or "fedora-build",
+        help="Build tag for dependency checking (default: from ~/.koji/config or fedora-build)",
     )
 
     koji_group.add_argument(
@@ -248,6 +261,12 @@ Examples:
 
     build_group.add_argument(
         "--ml-model", metavar="PATH", help="Path to ML model file (default: built-in)"
+    )
+
+    build_group.add_argument(
+        "--fedora-release",
+        metavar="VER",
+        help="Fedora release to fetch SRPMs from (e.g. 42). Default: auto-detect from target, fallback to rawhide",
     )
 
     mode_group = parser.add_argument_group("Mode options")
@@ -371,6 +390,7 @@ def ensure_srpm_path(
     no_ssl_verify: bool,
     no_ml: bool,
     ml_model_path: Optional[str],
+    fedora_release: str = "rawhide",
 ) -> str:
     """
     Return path to an SRPM file. If srpm_arg is an existing path, return it.
@@ -384,6 +404,7 @@ def ensure_srpm_path(
     name_resolver = create_name_resolver(no_ml=no_ml, ml_model_path=ml_model_path)
     fetcher = SRPMFetcher(
         download_dir=download_dir,
+        fedora_release=fedora_release,
         no_ssl_verify=no_ssl_verify,
         name_resolver=name_resolver,
     )
@@ -398,6 +419,7 @@ def cmd_download(
     no_ssl_verify: bool = False,
     no_ml: bool = False,
     ml_model_path: Optional[str] = None,
+    fedora_release: str = "rawhide",
 ) -> int:
     """Download SRPM from Fedora."""
     print(f"Downloading SRPM for: {package_name}")
@@ -406,6 +428,7 @@ def cmd_download(
         name_resolver = create_name_resolver(no_ml=no_ml, ml_model_path=ml_model_path)
         fetcher = SRPMFetcher(
             download_dir=download_dir,
+            fedora_release=fedora_release,
             no_ssl_verify=no_ssl_verify,
             name_resolver=name_resolver,
         )
@@ -436,6 +459,7 @@ def cmd_build(
     no_name_resolution: bool = False,
     no_ml: bool = False,
     ml_model_path: Optional[str] = None,
+    fedora_release: str = "rawhide",
 ) -> int:
     """Build package with dependency resolution."""
     srpm = Path(srpm_path)
@@ -457,6 +481,7 @@ def cmd_build(
         no_name_resolution=no_name_resolution,
         no_ml=no_ml,
         ml_model_path=ml_model_path,
+        fedora_release=fedora_release,
     )
 
     if dry_run:
@@ -528,10 +553,32 @@ def main(args: Optional[list[str]] = None) -> int:
 
     setup_logging(opts.verbose, opts.quiet)
 
+    if opts.no_ssl_verify:
+        import urllib3
+
+        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
     if opts.analyze_only:
-        srpm_path = opts.srpm or opts.target
-        if not srpm_path:
-            parser.error("--analyze-only requires SRPM path")
+        srpm_arg = opts.srpm or opts.target
+        if not srpm_arg:
+            parser.error("--analyze-only requires SRPM path or package name")
+
+        # Determine fedora_release for potential download
+        analyze_release = getattr(opts, "fedora_release", None) or "rawhide"
+
+        try:
+            srpm_path = ensure_srpm_path(
+                srpm_arg,
+                opts.download_dir,
+                opts.no_ssl_verify,
+                getattr(opts, "no_ml", False),
+                getattr(opts, "ml_model", None),
+                fedora_release=analyze_release,
+            )
+        except Exception as e:
+            logging.error("Failed to obtain SRPM: %s", e)
+            return 1
+
         return cmd_analyze(
             srpm_path, opts.server, opts.build_tag, opts.cert, opts.serverca, opts.no_ssl_verify
         )
@@ -540,12 +587,14 @@ def main(args: Optional[list[str]] = None) -> int:
         package_name = opts.srpm or opts.target
         if not package_name:
             parser.error("--download-only requires package name")
+        dl_release = getattr(opts, "fedora_release", None) or "rawhide"
         return cmd_download(
             package_name,
             opts.download_dir,
             opts.no_ssl_verify,
             no_ml=getattr(opts, "no_ml", False),
             ml_model_path=getattr(opts, "ml_model", None),
+            fedora_release=dl_release,
         )
 
     # Resolve target and srpm from positional arguments:
@@ -572,6 +621,13 @@ def main(args: Optional[list[str]] = None) -> int:
             "  Option 2: Add 'target = fedora-target' to ~/.koji/config under [koji]"
         )
 
+    # Determine fedora_release: explicit flag > auto-detect from target > rawhide
+    fedora_release = getattr(opts, "fedora_release", None)
+    if not fedora_release:
+        fedora_release = detect_fedora_release(target)
+    if not fedora_release:
+        fedora_release = "rawhide"
+
     try:
         srpm_path = ensure_srpm_path(
             srpm_arg,
@@ -579,6 +635,7 @@ def main(args: Optional[list[str]] = None) -> int:
             opts.no_ssl_verify,
             getattr(opts, "no_ml", False),
             getattr(opts, "ml_model", None),
+            fedora_release=fedora_release,
         )
     except Exception as e:
         logging.error("Download failed: %s", e)
@@ -601,6 +658,7 @@ def main(args: Optional[list[str]] = None) -> int:
         no_name_resolution=getattr(opts, "no_name_resolution", False),
         no_ml=getattr(opts, "no_ml", False),
         ml_model_path=getattr(opts, "ml_model", None),
+        fedora_release=fedora_release,
     )
 
 

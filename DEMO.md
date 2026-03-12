@@ -1,202 +1,219 @@
 # Демонстрация VibeBuild
 
-## Введение
+## Что такое VibeBuild
 
-**VibeBuild** — расширение системы сборки [Koji](https://koji.fedoraproject.org/) командой `vibebuild`.
-Одна команда `vibebuild <пакет>` запускает полный цикл: скачивание SRPM, разрешение зависимостей и сборку.
-В отличие от стандартной команды `koji build`, которая собирает один пакет и падает при отсутствии зависимостей, VibeBuild:
+**VibeBuild** — расширение системы сборки [Koji](https://koji.fedoraproject.org/).
+Одна команда `vibebuild <пакет>` запускает полный цикл: скачивание SRPM, анализ и разрешение зависимостей, сборку RPM.
 
-- **Автоматически разрешает зависимости** — находит недостающие `BuildRequires`, скачивает их SRPM из Koji и строит DAG (граф зависимостей) для правильного порядка сборки
-- **Резолвит имена пакетов** — виртуальные provides (`python3dist(requests)` → `python3-requests`), макросы (`%{python3_pkgversion}`) и короткие алиасы
-- **Использует ML** — для сложных случаев резолва имён, когда правила не срабатывают, применяется обученная модель (RandomForest на алиасах из Fedora)
+В отличие от стандартного `koji build`, который собирает один пакет и падает при отсутствии зависимостей, VibeBuild:
 
----
-
-## Почему AlmaLinux не ломает демонстрацию
-
-VibeBuild **полностью работает на AlmaLinux 9** (и любом RHEL-совместимом дистрибутиве). Вот почему:
-
-1. **Работа с Fedora Koji удалённо.** VibeBuild взаимодействует с `koji.fedoraproject.org` через CLI (`koji` команда) и HTTP API. Это работает с любой машины с сетевым доступом.
-
-2. **Пакет `koji` из EPEL идентичен.** На AlmaLinux 9 `koji` устанавливается из EPEL и функционально идентичен Fedora-версии — это тот же Python-клиент для Koji hub.
-
-3. **Локальные операции не зависят от ОС.** Скачивание SRPM, извлечение spec-файла (`rpm2cpio`), анализ `BuildRequires`, построение графа зависимостей — всё это стандартные операции с RPM, доступные на любой RPM-based системе.
-
-4. **Реальная сборка идёт на удалённых билдерах.** Команда `koji build` отправляет SRPM на серверы Koji, где сборка выполняется в чистых chroot-окружениях. Локальная ОС не влияет на результат.
-
-5. **Единственное ограничение** — для отправки задач на сборку (`koji build`) нужна аутентификация в Fedora Koji (Fedora Account System). Все остальные режимы (download, analyze, dry-run) работают без аутентификации.
+- **Автоматически разрешает зависимости** — находит недостающие `BuildRequires`, строит DAG зависимостей и собирает пакеты в правильном порядке
+- **Резолвит имена пакетов** — виртуальные provides (`python3dist(requests)` → `python3-requests`), pkgconfig (`pkgconfig(libxml-2.0)` → `libxml2-devel`), макросы (`%{python3_pkgversion}`)
+- **Использует ML** — для сложных случаев резолва имён применяется обученная модель (RandomForest на данных из Fedora)
 
 ---
 
-## Предусловия для AlmaLinux 9
+## Подготовка окружения
+
+### 1. Запуск Koji-сервера в Docker
+
+На машине развёрнут локальный Koji-сервер (hub + builder + PostgreSQL) через Docker Compose:
 
 ```bash
-# Подключить EPEL (если ещё не подключён)
-sudo dnf install epel-release
-
-# Установить необходимые пакеты
-sudo dnf install koji rpm-build python3-pip
-
-# Установить vibebuild
-cd koji-vibebuild
-pip install -e .
+cd dev/koji-server
+make setup
 ```
 
-Проверка:
+Это поднимает три контейнера:
+
+| Сервис | Назначение |
+|--------|------------|
+| `db` | PostgreSQL 16 — база данных Koji |
+| `koji-hub` | Koji Hub + Web UI (Apache + mod_wsgi, Fedora 42) |
+| `koji-builder` | kojid + mock — сборщик RPM (Fedora 42, privileged) |
+
+Проверка что сервер работает:
+
 ```bash
-python3 --version   # Python 3.9.x
-koji --version       # koji 1.x
-vibebuild --version  # vibebuild 0.1.0
+# Статус контейнеров
+docker compose -f dev/koji-server/docker-compose.yml ps
+
+# Проверка подключения к Koji
+koji --authtype=ssl moshimoshi
+# Ожидаемый вывод: "olá, kojiadmin!"
+
+# Список тегов
+koji --authtype=ssl list-tags
+# Ожидаемый вывод:
+# f42
+# f42-build
 ```
+
+### 2. Конфигурация клиента
+
+Файл `~/.koji/config` уже настроен скриптом `make setup`:
+
+```ini
+[koji]
+server = https://localhost:8443/kojihub
+weburl = https://localhost:8443/koji
+topurl = https://localhost:8443/kojifiles
+cert = <путь>/dev/koji-server/ssl/kojiadmin.pem
+serverca = <путь>/dev/koji-server/ssl/koji_ca_cert.crt
+authtype = ssl
+target = f42
+build_tag = f42-build
+```
+
+VibeBuild читает этот конфиг автоматически — не нужно указывать `--server`, `--build-tag` и т.д.
 
 ---
 
-## Предусловия для Fedora (38+)
+## Демонстрация (пошагово)
 
-```bash
-# Установить необходимые пакеты
-sudo dnf install koji rpm-build python3-pip
-
-# Установить vibebuild
-cd koji-vibebuild
-pip install -e .
-```
-
-Проверка — аналогично.
-
----
-
-## Запуск тестов
-
-Тесты — доказательство работоспособности всех модулей. 340 тестов, покрытие 99%.
+### Шаг 1: Тесты (342 теста, покрытие 99%)
 
 ```bash
 python3 -m pytest tests/ -v --cov=vibebuild --cov-report=term-missing
 ```
 
-Ожидаемый результат:
+Результат:
 ```
-340 passed in ~2s
-
-Name                         Stmts   Miss Branch BrPart  Cover
-------------------------------------------------------------------------
-vibebuild/__init__.py            8      0      0      0   100%
-vibebuild/analyzer.py          164      0     70      0   100%
-vibebuild/builder.py           226      0     64      0   100%
-vibebuild/cli.py               226      0     74      0   100%
-vibebuild/exceptions.py         18      0      0      0   100%
-vibebuild/fetcher.py           173      1     66      1    99%
-vibebuild/ml_resolver.py       114      0     24      0   100%
-vibebuild/name_resolver.py     124      0     58      0   100%
-vibebuild/resolver.py          196      0     92      0   100%
-------------------------------------------------------------------------
-TOTAL                         1249      1    448      1    99%
+342 passed in ~2s
+TOTAL    1261    1    456    1    99%
 ```
 
 ---
 
-## Демо 1: Загрузка SRPM
+### Шаг 2: Скачивание SRPM
 
-Скачать SRPM пакета `python-requests` из Fedora Koji:
+Скачать SRPM пакета по имени из Fedora Koji:
 
 ```bash
-vibebuild --download-only python-requests
+vibebuild --download-only python-six
 ```
 
-Ожидаемый вывод:
+Вывод:
 ```
-Downloading SRPM for: python-requests
-✓ Downloaded: /tmp/vibebuild/python-requests/python-requests-2.32.3-4.fc42.src.rpm
+Downloading SRPM for: python-six
+✓ Downloaded: /tmp/vibebuild/python-six/python-six-1.17.0-2.fc42.src.rpm
 ```
-
-Файл сохраняется в `/tmp/vibebuild/<имя-пакета>/`. Можно указать другой каталог через `--download-dir`.
 
 ---
 
-## Демо 2: Анализ зависимостей
+### Шаг 3: Анализ зависимостей (`--analyze-only`)
 
-Проанализировать скачанный SRPM — извлечь spec-файл, показать метаданные и `BuildRequires`:
+Извлекает spec-файл из SRPM, парсит `BuildRequires`, проверяет их наличие в Koji:
 
 ```bash
-vibebuild --analyze-only --build-tag f42-build \
-    /tmp/vibebuild/python-requests/python-requests-2.32.3-4.fc42.src.rpm
+vibebuild --analyze-only /tmp/vibebuild/python-six/python-six-1.17.0-2.fc42.src.rpm
 ```
 
-Ожидаемый вывод:
+Вывод:
 ```
-Analyzing: /tmp/vibebuild/python-requests/python-requests-2.32.3-4.fc42.src.rpm
+Package: python-six-1.17.0-1
+Analyzing dependencies...
 
-Package: python-requests
-Version: 2.32.3
-Release: 4
-NVR: python-requests-2.32.3-4
-
-BuildRequires (5):
+BuildRequires (8):
+  - pyproject-rpm-macros
   - python3-devel
-  - python3dist(pytest)
-  - python3dist(pytest-httpbin)
-  - python3dist(pytest-mock)
-  - python3dist(trustme)
+  - python3-pytest
+  - python3-tkinter
+  - python3-packaging
+  - python3-pip
+  - python3-setuptools
+  - python3-six
 
-Checking availability in Koji...
-
-Missing dependencies (5):
+Missing dependencies (7):
+  ✗ pyproject-rpm-macros
   ✗ python3-devel
-  ✗ python3dist(pytest)
-  ✗ python3dist(pytest-httpbin)
-  ✗ python3dist(pytest-mock)
-  ✗ python3dist(trustme)
+  ...
 ```
 
-> **Примечание:** Зависимости помечены как «missing» потому что `koji list-pkgs` ищет по имени source-пакета, а `python3-devel` — subpackage от `python3.14`. VibeBuild обрабатывает такие случаи при построении графа сборки (dry-run/build).
+> **Примечание:** Зависимости «missing» потому что в локальном Koji они ещё не собраны. Но они доступны через external repos (Fedora 42), и mock скачает их автоматически при сборке.
 
 ---
 
-## Демо 3: Dry-run (граф сборки)
+### Шаг 4: Dry-run — граф сборки (`--dry-run`)
 
-Показать порядок сборки без реальной сборки. Для быстрой демонстрации рекомендуется использовать пакет с небольшим числом зависимостей:
+Строит полный DAG зависимостей без реальной сборки:
 
 ```bash
-# Если target = f42 прописан в ~/.koji/config:
-vibebuild --dry-run --build-tag f42-build \
-    /tmp/vibebuild/python-chardet/python-chardet-5.2.0-16.fc42.src.rpm
-
-# Явный target (прежняя форма):
-vibebuild --dry-run --build-tag f42-build f42 \
-    /tmp/vibebuild/python-chardet/python-chardet-5.2.0-16.fc42.src.rpm
+vibebuild --dry-run /tmp/vibebuild/python-six/python-six-1.17.0-2.fc42.src.rpm
 ```
 
-VibeBuild в этом режиме:
-1. Извлекает `BuildRequires` из SRPM
-2. Проверяет, какие зависимости отсутствуют в Koji tag `f42-build`
-3. Для каждой недостающей зависимости скачивает SRPM и рекурсивно анализирует её зависимости
-4. Строит DAG и выводит уровни сборки (level 0 — пакеты без зависимостей, level 1 — зависят от level 0 и т.д.)
+Вывод:
+```
+Starting vibebuild for: python-six-1.17.0-2.fc42.src.rpm
+Analyzing dependencies...
+Found 8 packages to build in 2 levels
 
-> **Примечание:** Для пакетов с глубоким деревом зависимостей (например `python-requests`) dry-run может занять несколько минут из-за скачивания SRPM всех транзитивных зависимостей.
+Build plan:
+  Level 1: pyproject-rpm-macros, python3-devel, python3-pytest, ...
+  Level 2: python-six
+
+DRY RUN — no builds submitted.
+```
+
+Показывает **порядок сборки**: пакеты уровня 1 собираются первыми (параллельно), затем уровень 2.
 
 ---
 
-## Демо 4 (опционально): Реальная сборка
+### Шаг 5: Реальная сборка
 
-При наличии аутентификации в Fedora Koji (FAS) можно выполнить scratch-сборку:
+Полный цикл: анализ → разрешение зависимостей → сборка RPM через Koji/mock:
 
 ```bash
-# Если target = f42 прописан в ~/.koji/config:
-vibebuild --scratch --build-tag f42-build \
-    /tmp/vibebuild/python-requests/python-requests-2.32.3-4.fc42.src.rpm
-
-# Явный target (прежняя форма):
-vibebuild --scratch --build-tag f42-build f42 \
-    /tmp/vibebuild/python-requests/python-requests-2.32.3-4.fc42.src.rpm
+vibebuild /tmp/vibebuild/python-six/python-six-1.17.0-2.fc42.src.rpm
 ```
 
-Scratch-сборка — тестовая сборка без тегирования результата. Для аутентификации нужен Kerberos-тикет или клиентский сертификат в `~/.koji/config`.
+Вывод:
+```
+Starting vibebuild for: python-six-1.17.0-2.fc42.src.rpm
+Analyzing dependencies...
+Found 8 packages to build in 2 levels
+Building level 1/2: [...]
+  Skipping pyproject-rpm-macros: no SRPM available (available via external repo)
+  ...
+Waiting for repo regeneration: f42-build
+Repo regenerated successfully
+Building level 2/2: [python-six]
+Building target package: python-six-1.17.0-1
+Build submitted: task_id=17
+
+============================================================
+BUILD SUMMARY
+============================================================
+Status: SUCCESS ✓
+Total time: 109.7 seconds
+Packages built: 1
+
+Successfully built:
+  ✓ python-six
+      Task ID: 17
+============================================================
+```
+
+Проверка результата в Koji:
+
+```bash
+# Пакет затегирован в f42
+koji --authtype=ssl list-tagged f42
+# python-six-1.17.0-2.fc42    f42    kojiadmin
+
+# Детали билда
+koji --authtype=ssl buildinfo python-six-1.17.0-2.fc42
+# State: COMPLETE
+# RPMs:
+#   python-six-1.17.0-2.fc42.src.rpm
+#   python3-six-1.17.0-2.fc42.noarch.rpm
+```
 
 ---
 
-## Демо 5: Резолв имён пакетов (модуль)
+### Шаг 6: Резолв имён пакетов (модуль)
 
-Продемонстрировать работу резолвера имён напрямую:
+Демонстрация работы резолвера имён:
 
 ```bash
 python3 -c "
@@ -205,6 +222,7 @@ r = PackageNameResolver()
 print(r.resolve('python3dist(requests)'))   # → python3-requests
 print(r.resolve('python3dist(setuptools)')) # → python3-setuptools
 print(r.resolve('pkgconfig(libxml-2.0)'))   # → libxml2-devel
+print(r.resolve('perl(Getopt::Long)'))      # → perl-Getopt-Long
 "
 ```
 
@@ -212,16 +230,14 @@ print(r.resolve('pkgconfig(libxml-2.0)'))   # → libxml2-devel
 
 ## Шпаргалка команд
 
-| Режим | Команда | Что делает |
-|-------|---------|------------|
-| Загрузка SRPM | `vibebuild --download-only python-requests` | Скачивает SRPM из Fedora Koji |
-| Анализ зависимостей | `vibebuild --analyze-only --build-tag f42-build <path.src.rpm>` | Парсит spec, выводит BuildRequires и проверяет наличие в Koji |
-| Dry-run | `vibebuild --dry-run --build-tag f42-build f42 <path.src.rpm>` | Строит граф сборки без реальной сборки |
-| Сборка | `vibebuild --build-tag f42-build f42 <path.src.rpm>` | Полная сборка с разрешением зависимостей |
-| Scratch-сборка | `vibebuild --scratch --build-tag f42-build f42 <path.src.rpm>` | Тестовая сборка без тегирования |
-| Без зависимостей | `vibebuild --no-deps f42 <path.src.rpm>` | Сборка без разрешения зависимостей |
-| По имени пакета | `vibebuild python-requests` | Скачать SRPM по имени и собрать (target из ~/.koji/config) |
-| С явным target | `vibebuild fedora-target python-requests` | Скачать SRPM по имени и собрать (явный target) |
+| Режим | Команда | Описание |
+|-------|---------|----------|
+| Скачать SRPM | `vibebuild --download-only python-six` | Скачивает SRPM из Fedora Koji |
+| Анализ | `vibebuild --analyze-only <srpm>` | Показывает BuildRequires и их наличие в Koji |
+| Dry-run | `vibebuild --dry-run <srpm>` | Строит граф сборки без реальной сборки |
+| Сборка | `vibebuild <srpm>` | Полная сборка с разрешением зависимостей |
+| Scratch | `vibebuild --scratch <srpm>` | Тестовая сборка без тегирования |
+| По имени | `vibebuild python-six` | Скачать SRPM по имени и собрать |
 
 ---
 
@@ -229,17 +245,39 @@ print(r.resolve('pkgconfig(libxml-2.0)'))   # → libxml2-devel
 
 ```
 vibebuild/
-├── cli.py            — Точка входа, парсинг аргументов, диспетчер команд
+├── cli.py            — Точка входа, парсинг аргументов, загрузка конфига
 ├── analyzer.py       — Извлечение spec из SRPM, парсинг BuildRequires
-├── fetcher.py        — Скачивание SRPM из Fedora Koji (API + fallback на koji CLI)
-├── resolver.py       — Проверка зависимостей в Koji tag, построение DAG
-├── builder.py        — Запуск сборки через koji CLI, отслеживание статуса
-├── name_resolver.py  — Резолв имён: макросы, виртуальные provides, паттерны
-├── ml_resolver.py    — ML-модель (RandomForest) для сложных случаев резолва
+├── fetcher.py        — Скачивание SRPM из Fedora Koji
+├── resolver.py       — Проверка зависимостей в Koji, построение DAG
+├── builder.py        — Запуск сборки через koji CLI, отслеживание задач
+├── name_resolver.py  — Резолв имён: макросы, provides, паттерны
+├── ml_resolver.py    — ML-модель (RandomForest) для сложных случаев
 ├── exceptions.py     — Иерархия исключений
 └── data/
     ├── alias_training.json   — Обучающие данные для ML-модели
-    └── ml_model.joblib       — Обученная модель (если есть)
+    └── ml_model.joblib       — Сериализованная модель
+
+dev/koji-server/          — Локальный Koji-сервер в Docker Compose
+├── docker-compose.yml
+├── Makefile              — make setup / stop / clean / logs
+├── hub/                  — Koji Hub + Web (Apache, Fedora 42)
+├── builder/              — kojid + mock (privileged)
+└── scripts/
+    ├── generate-certs.sh — Генерация SSL-сертификатов
+    ├── koji-init.sh      — Инициализация тегов, таргетов, групп
+    └── setup-client.sh   — Настройка ~/.koji/config
 ```
 
-**Роль ML:** Когда стандартные правила `name_resolver.py` не могут определить имя source-пакета по имени BuildRequires (например, `rubygem-foo` → `rubygem-foo`), ML-модель предсказывает маппинг на основе обучения на реальных данных из Fedora.
+---
+
+## Управление сервером
+
+```bash
+cd dev/koji-server
+
+make setup    # Первый запуск (certs + containers + init + client config)
+make stop     # Остановить (данные сохраняются)
+make start    # Запустить снова
+make clean    # Полная очистка (контейнеры + volumes + сертификаты)
+make logs     # Логи всех сервисов
+```

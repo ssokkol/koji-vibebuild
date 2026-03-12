@@ -3,6 +3,7 @@ Dependency resolver - checks dependencies in Koji and builds DAG.
 """
 from __future__ import annotations
 
+import logging
 import os
 import subprocess
 from collections import defaultdict
@@ -11,6 +12,8 @@ from typing import Optional
 
 from vibebuild.analyzer import BuildRequirement, PackageInfo, get_build_requires
 from vibebuild.exceptions import CircularDependencyError, KojiConnectionError
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -58,8 +61,8 @@ class KojiClient:
 
         if self.cert:
             cmd.append(f"--cert={self.cert}")
-        if self.serverca:
-            cmd.append(f"--serverca={self.serverca}")
+        # Note: --serverca is not supported on RHEL9/older koji CLI.
+        # The serverca is read from ~/.koji/config instead.
 
         cmd.extend(args)
 
@@ -78,6 +81,9 @@ class KojiClient:
         result = self._run_koji_command("list-pkgs", f"--tag={tag}", "--quiet")
 
         if result.returncode != 0:
+            # "no matching packages" is normal for empty tags
+            if "no matching packages" in (result.stderr + result.stdout):
+                return []
             raise KojiConnectionError(f"Failed to list packages: {result.stderr}")
 
         packages = []
@@ -112,6 +118,18 @@ class KojiClient:
         result = self._run_koji_command("list-tagged", tag, "--package", package, "--quiet")
         return bool(result.stdout.strip())
 
+    def has_external_repos(self, tag: str) -> bool:
+        """Check if a tag has external repos configured."""
+        result = self._run_koji_command("list-external-repos", f"--tag={tag}")
+        if result.returncode != 0:
+            return False
+        # Output has header lines; actual repos have URL-like content
+        for line in result.stdout.strip().split("\n"):
+            line = line.strip()
+            if line and "http" in line:
+                return True
+        return False
+
     def search_package(self, pattern: str) -> list[str]:
         """Search for packages by pattern."""
         result = self._run_koji_command("search", "package", pattern)
@@ -141,6 +159,7 @@ class DependencyResolver:
         self.name_resolver = name_resolver
         self._available_packages: Optional[set[str]] = None
         self._dependency_graph: dict[str, DependencyNode] = {}
+        self._has_external_repos: Optional[bool] = None
 
     @property
     def available_packages(self) -> set[str]:
@@ -152,6 +171,31 @@ class DependencyResolver:
     def refresh_available_packages(self) -> None:
         """Force refresh of available packages cache."""
         self._available_packages = None
+
+    def _check_external_repos(self) -> bool:
+        """Check if the build tag has external repos configured (cached)."""
+        if self._has_external_repos is None:
+            try:
+                self._has_external_repos = self.koji.has_external_repos(self.koji_tag)
+            except Exception:
+                self._has_external_repos = False
+        return self._has_external_repos
+
+    def _is_our_package(self, package_name: str) -> bool:
+        """Check if a package is registered in our local Koji.
+
+        When external repos are configured, only packages registered in
+        our local Koji need to be built by us. Everything else is assumed
+        to come from the external repos (e.g. Fedora base packages).
+        """
+        if package_name in self.available_packages:
+            return True
+        # Also check with name resolver
+        if self.name_resolver:
+            resolved = self.name_resolver.resolve(package_name)
+            if resolved in self.available_packages:
+                return True
+        return False
 
     def find_missing_deps(
         self, deps: list[str | BuildRequirement], check_provides: bool = True
@@ -167,6 +211,7 @@ class DependencyResolver:
             List of missing package names
         """
         missing = []
+        has_ext_repos = self._check_external_repos()
 
         for dep in deps:
             name = dep.name if isinstance(dep, BuildRequirement) else dep
@@ -187,6 +232,20 @@ class DependencyResolver:
                 if name in self.available_packages:
                     continue
                 if self.koji.package_exists(name, self.koji_tag):
+                    continue
+
+            # If external repos are configured, deps NOT registered in our
+            # local Koji are assumed available from the external repos.
+            # Only deps that ARE our packages (registered but not yet built)
+            # are truly missing.  Since we already checked package_exists
+            # above and it returned False, any dep not in our package list
+            # must come from external repos.
+            if has_ext_repos:
+                check_name = resolved_name if resolved_name != name else name
+                if not self._is_our_package(check_name):
+                    logger.debug(
+                        f"  {check_name}: not in local Koji, assuming available via external repos"
+                    )
                     continue
 
             missing.append(resolved_name)
@@ -261,20 +320,13 @@ class DependencyResolver:
         if not self._dependency_graph:
             return []
 
-        in_degree: dict[str, int] = defaultdict(int)
-        for node in self._dependency_graph.values():
-            if node.name not in in_degree:
-                in_degree[node.name] = 0
-            for dep in node.dependencies:
-                in_degree[dep] += 0
-                in_degree[node.name] += 1 if dep in self._dependency_graph else 0
-
         adj: dict[str, list[str]] = defaultdict(list)
         for node in self._dependency_graph.values():
             for dep in node.dependencies:
                 if dep in self._dependency_graph:
                     adj[dep].append(node.name)
 
+        in_degree: dict[str, int] = {}
         for name, node in self._dependency_graph.items():
             in_degree[name] = sum(
                 1

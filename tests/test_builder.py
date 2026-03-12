@@ -131,7 +131,8 @@ class TestKojiBuilder:
 
         call_args = mock_subprocess_run.call_args[0][0]
         assert "--cert=/path/to/cert.pem" in call_args
-        assert "--serverca=/path/to/ca.crt" in call_args
+        # --serverca is not passed on CLI (RHEL9 compat); read from ~/.koji/config
+        assert not any("--serverca" in a for a in call_args)
 
     def test_run_koji_timeout(self, mock_subprocess_run):
         mock_subprocess_run.side_effect = subprocess.TimeoutExpired(cmd="koji", timeout=60)
@@ -180,7 +181,8 @@ class TestKojiBuilder:
                 build_requires=[],
                 source_urls=[]
             )
-            task = builder.build_package(str(srpm), wait=True)
+            with patch.object(builder, "_poll_build", return_value=BuildStatus.COMPLETE):
+                task = builder.build_package(str(srpm), wait=True)
 
         assert task.status == BuildStatus.COMPLETE
 
@@ -319,7 +321,164 @@ class TestKojiBuilder:
         assert result is False
 
 
+class TestSubmitBuild:
+    def test_submit_build_returns_building_status(self, tmp_path, mock_subprocess_run):
+        srpm = tmp_path / "test-pkg-1.0-1.src.rpm"
+        srpm.write_text("fake srpm")
+        mock_subprocess_run.return_value.returncode = 0
+        mock_subprocess_run.return_value.stdout = "Created task: 12345"
+        mock_subprocess_run.return_value.stderr = ""
+        builder = KojiBuilder()
+
+        with patch("vibebuild.builder.get_package_info_from_srpm") as mock_info:
+            mock_info.return_value = PackageInfo(
+                name="test-pkg", version="1.0", release="1",
+                build_requires=[], source_urls=[]
+            )
+            task = builder._submit_build(str(srpm))
+
+        assert task.status == BuildStatus.BUILDING
+        assert task.task_id == 12345
+        assert task.package_name == "test-pkg"
+
+    def test_submit_build_parses_task_info_format(self, tmp_path, mock_subprocess_run):
+        srpm = tmp_path / "test-pkg-1.0-1.src.rpm"
+        srpm.write_text("fake srpm")
+        mock_subprocess_run.return_value.returncode = 0
+        mock_subprocess_run.return_value.stdout = "Task info: id=67890"
+        mock_subprocess_run.return_value.stderr = ""
+        builder = KojiBuilder()
+
+        with patch("vibebuild.builder.get_package_info_from_srpm") as mock_info:
+            mock_info.return_value = PackageInfo(
+                name="test-pkg", version="1.0", release="1",
+                build_requires=[], source_urls=[]
+            )
+            task = builder._submit_build(str(srpm))
+
+        assert task.task_id == 67890
+        assert task.status == BuildStatus.BUILDING
+
+    def test_submit_build_file_not_found(self):
+        builder = KojiBuilder()
+
+        with pytest.raises(FileNotFoundError):
+            builder._submit_build("/nonexistent/path.src.rpm")
+
+    def test_submit_build_failure_raises(self, tmp_path, mock_subprocess_run):
+        srpm = tmp_path / "test.src.rpm"
+        srpm.write_text("fake srpm")
+        mock_subprocess_run.return_value.returncode = 1
+        mock_subprocess_run.return_value.stderr = "Build submission failed"
+        builder = KojiBuilder()
+
+        with patch("vibebuild.builder.get_package_info_from_srpm") as mock_info:
+            mock_info.return_value = PackageInfo(
+                name="test", version="1.0", release="1",
+                build_requires=[], source_urls=[]
+            )
+            with pytest.raises(KojiBuildError):
+                builder._submit_build(str(srpm))
+
+
+class TestPollBuilds:
+    def test_poll_builds_all_complete(self, mock_subprocess_run):
+        builder = KojiBuilder()
+        tasks = [
+            BuildTask(package_name="pkg1", srpm_path="/p1", target="t", task_id=101, status=BuildStatus.BUILDING),
+            BuildTask(package_name="pkg2", srpm_path="/p2", target="t", task_id=102, status=BuildStatus.BUILDING),
+        ]
+        mock_subprocess_run.return_value.returncode = 0
+        mock_subprocess_run.return_value.stdout = "State: closed"
+
+        with patch("vibebuild.builder.time.sleep"):
+            builder._poll_builds(tasks, timeout=60, interval=1)
+
+        assert tasks[0].status == BuildStatus.COMPLETE
+        assert tasks[1].status == BuildStatus.COMPLETE
+
+    def test_poll_builds_mixed_results(self, mock_subprocess_run):
+        builder = KojiBuilder()
+        tasks = [
+            BuildTask(package_name="pkg1", srpm_path="/p1", target="t", task_id=201, status=BuildStatus.BUILDING),
+            BuildTask(package_name="pkg2", srpm_path="/p2", target="t", task_id=202, status=BuildStatus.BUILDING),
+        ]
+        mock_subprocess_run.return_value.returncode = 0
+        # pkg1 closed, pkg2 failed
+        def taskinfo_side_effect(*args, **kwargs):
+            cmd = args[0]
+            if "201" in cmd:
+                return Mock(returncode=0, stdout="State: closed", stderr="")
+            elif "202" in cmd:
+                return Mock(returncode=0, stdout="State: failed", stderr="")
+            return Mock(returncode=0, stdout="", stderr="")
+
+        mock_subprocess_run.side_effect = taskinfo_side_effect
+
+        with patch("vibebuild.builder.time.sleep"):
+            builder._poll_builds(tasks, timeout=60, interval=1)
+
+        assert tasks[0].status == BuildStatus.COMPLETE
+        assert tasks[1].status == BuildStatus.FAILED
+
+    def test_poll_builds_timeout(self, mock_subprocess_run):
+        builder = KojiBuilder()
+        tasks = [
+            BuildTask(package_name="pkg1", srpm_path="/p1", target="t", task_id=301, status=BuildStatus.BUILDING),
+        ]
+        mock_subprocess_run.return_value.returncode = 0
+        mock_subprocess_run.return_value.stdout = "State: open"
+
+        call_count = 0
+
+        def fake_time():
+            nonlocal call_count
+            call_count += 1
+            # First few calls return 0 (start), then exceed timeout
+            if call_count <= 3:
+                return 0
+            return 9999
+
+        with patch("vibebuild.builder.time.time", side_effect=fake_time):
+            with patch("vibebuild.builder.time.sleep"):
+                builder._poll_builds(tasks, timeout=60, interval=1)
+
+        assert tasks[0].status == BuildStatus.FAILED
+        assert "timed out" in tasks[0].error_message
+
+    def test_poll_builds_no_task_id_skipped(self, mock_subprocess_run):
+        builder = KojiBuilder()
+        tasks = [
+            BuildTask(package_name="pkg1", srpm_path="/p1", target="t", task_id=None, status=BuildStatus.BUILDING),
+        ]
+
+        builder._poll_builds(tasks)
+
+        # Status unchanged — no task_id to poll
+        assert tasks[0].status == BuildStatus.BUILDING
+
+    def test_poll_builds_canceled(self, mock_subprocess_run):
+        builder = KojiBuilder()
+        tasks = [
+            BuildTask(package_name="pkg1", srpm_path="/p1", target="t", task_id=401, status=BuildStatus.BUILDING),
+        ]
+        mock_subprocess_run.return_value.returncode = 0
+        mock_subprocess_run.return_value.stdout = "State: canceled"
+
+        with patch("vibebuild.builder.time.sleep"):
+            builder._poll_builds(tasks, timeout=60, interval=1)
+
+        assert tasks[0].status == BuildStatus.CANCELED
+
+
 class TestKojiBuilderBuildWithDeps:
+    def _make_complete_task(self, name, srpm_path):
+        return BuildTask(
+            package_name=name, srpm_path=str(srpm_path),
+            target="fedora-target", task_id=12345,
+            status=BuildStatus.COMPLETE
+        )
+
     def test_build_with_deps_no_missing_deps(self, tmp_path, mock_subprocess_run, sample_spec_content):
         srpm = tmp_path / "test.src.rpm"
         srpm.write_text("fake srpm")
@@ -334,7 +493,8 @@ class TestKojiBuilderBuildWithDeps:
             )
             with patch.object(builder.resolver, "build_dependency_graph"):
                 with patch.object(builder.resolver, "get_build_chain", return_value=[]):
-                    result = builder.build_with_deps(str(srpm))
+                    with patch.object(builder, "build_package", return_value=self._make_complete_task("test", srpm)):
+                        result = builder.build_with_deps(str(srpm))
 
         assert result.success is True
         assert "test" in result.built_packages
@@ -353,6 +513,15 @@ class TestKojiBuilderBuildWithDeps:
             "dep": DependencyNode(name="dep", srpm_path=str(dep_srpm)),
         }
 
+        dep_task = BuildTask(
+            package_name="dep", srpm_path=str(dep_srpm),
+            target="fedora-target", task_id=111, status=BuildStatus.BUILDING
+        )
+
+        def mock_poll(tasks, **kwargs):
+            for t in tasks:
+                t.status = BuildStatus.COMPLETE
+
         with patch("vibebuild.builder.get_package_info_from_srpm") as mock_info:
             mock_info.return_value = PackageInfo(
                 name="main", version="1.0", release="1",
@@ -360,7 +529,10 @@ class TestKojiBuilderBuildWithDeps:
             )
             with patch.object(builder.resolver, "build_dependency_graph"):
                 with patch.object(builder.resolver, "get_build_chain", return_value=[["dep"], ["main"]]):
-                    result = builder.build_with_deps(str(srpm))
+                    with patch.object(builder, "_submit_build", return_value=dep_task):
+                        with patch.object(builder, "_poll_builds", side_effect=mock_poll):
+                            with patch.object(builder, "build_package", return_value=self._make_complete_task("main", srpm)):
+                                result = builder.build_with_deps(str(srpm))
 
         assert "dep" in result.built_packages
         assert "main" in result.built_packages
@@ -385,7 +557,8 @@ class TestKojiBuilderBuildWithDeps:
             )
             with patch.object(builder.resolver, "build_dependency_graph"):
                 with patch.object(builder.resolver, "get_build_chain", return_value=[]):
-                    result = builder.build_with_deps(str(srpm))
+                    with patch.object(builder, "build_package", return_value=self._make_complete_task("test", srpm)):
+                        result = builder.build_with_deps(str(srpm))
 
         assert result.total_time >= 0
 
@@ -401,11 +574,10 @@ class TestKojiBuilderBuildChain:
         builder = KojiBuilder()
         packages = [("pkg1", str(pkg1)), ("pkg2", str(pkg2))]
 
-        with patch("vibebuild.builder.get_package_info_from_srpm") as mock_info:
-            mock_info.side_effect = [
-                PackageInfo(name="pkg1", version="1.0", release="1", build_requires=[], source_urls=[]),
-                PackageInfo(name="pkg2", version="1.0", release="1", build_requires=[], source_urls=[]),
-            ]
+        task1 = BuildTask(package_name="pkg1", srpm_path=str(pkg1), target="fedora-target", task_id=1, status=BuildStatus.COMPLETE)
+        task2 = BuildTask(package_name="pkg2", srpm_path=str(pkg2), target="fedora-target", task_id=2, status=BuildStatus.COMPLETE)
+
+        with patch.object(builder, "build_package", side_effect=[task1, task2]):
             result = builder.build_chain(packages)
 
         assert result.success is True
@@ -550,6 +722,11 @@ class TestBuildWithDepsEdgeCases:
         def capture_resolver(name, path, srpm_resolver=None):
             captured_resolver["fn"] = srpm_resolver
 
+        complete_task = BuildTask(
+            package_name="test", srpm_path=str(srpm),
+            target="fedora-target", task_id=12345, status=BuildStatus.COMPLETE
+        )
+
         with patch("vibebuild.builder.get_package_info_from_srpm") as mock_info:
             mock_info.return_value = PackageInfo(
                 name="test", version="1.0", release="1",
@@ -557,7 +734,8 @@ class TestBuildWithDepsEdgeCases:
             )
             with patch.object(builder.resolver, "build_dependency_graph", side_effect=capture_resolver):
                 with patch.object(builder.resolver, "get_build_chain", return_value=[]):
-                    result = builder.build_with_deps(str(srpm))
+                    with patch.object(builder, "build_package", return_value=complete_task):
+                        result = builder.build_with_deps(str(srpm))
 
         # Call the captured srpm_resolver
         assert captured_resolver["fn"] is not None
@@ -578,6 +756,11 @@ class TestBuildWithDepsEdgeCases:
         def capture_resolver(name, path, srpm_resolver=None):
             captured_resolver["fn"] = srpm_resolver
 
+        complete_task = BuildTask(
+            package_name="test", srpm_path=str(srpm),
+            target="fedora-target", task_id=12345, status=BuildStatus.COMPLETE
+        )
+
         with patch("vibebuild.builder.get_package_info_from_srpm") as mock_info:
             mock_info.return_value = PackageInfo(
                 name="test", version="1.0", release="1",
@@ -585,7 +768,8 @@ class TestBuildWithDepsEdgeCases:
             )
             with patch.object(builder.resolver, "build_dependency_graph", side_effect=capture_resolver):
                 with patch.object(builder.resolver, "get_build_chain", return_value=[]):
-                    builder.build_with_deps(str(srpm))
+                    with patch.object(builder, "build_package", return_value=complete_task):
+                        builder.build_with_deps(str(srpm))
 
         with patch.object(builder.fetcher, "download_srpm", side_effect=Exception("download fail")):
             dep_path = captured_resolver["fn"]("dep-pkg")
@@ -604,6 +788,12 @@ class TestBuildWithDepsEdgeCases:
             "no-srpm": DependencyNode(name="no-srpm", srpm_path=None),
         }
 
+        complete_task = BuildTask(
+            package_name="test", srpm_path=str(srpm),
+            target="fedora-target", task_id=12345,
+            status=BuildStatus.COMPLETE
+        )
+
         with patch("vibebuild.builder.get_package_info_from_srpm") as mock_info:
             mock_info.return_value = PackageInfo(
                 name="test", version="1.0", release="1",
@@ -611,12 +801,13 @@ class TestBuildWithDepsEdgeCases:
             )
             with patch.object(builder.resolver, "build_dependency_graph"):
                 with patch.object(builder.resolver, "get_build_chain", return_value=[["no-srpm"], ["test"]]):
-                    result = builder.build_with_deps(str(srpm))
+                    with patch.object(builder, "build_package", return_value=complete_task):
+                        result = builder.build_with_deps(str(srpm))
 
         assert "no-srpm" not in result.built_packages
 
     def test_dep_build_failure_adds_to_failed(self, tmp_path, mock_subprocess_run):
-        """Dep build exception should add to failed_packages."""
+        """Dep submit exception should add to failed_packages."""
         srpm = tmp_path / "test.src.rpm"
         srpm.write_text("fake srpm")
         dep_srpm = tmp_path / "dep.src.rpm"
@@ -635,7 +826,7 @@ class TestBuildWithDepsEdgeCases:
             )
             with patch.object(builder.resolver, "build_dependency_graph"):
                 with patch.object(builder.resolver, "get_build_chain", return_value=[["dep"]]):
-                    with patch.object(builder, "build_package", side_effect=Exception("build error")):
+                    with patch.object(builder, "_submit_build", side_effect=Exception("build error")):
                         result = builder.build_with_deps(str(srpm))
 
         assert "dep" in result.failed_packages
@@ -698,10 +889,14 @@ class TestBuildWithDepsEdgeCases:
             "dep": DependencyNode(name="dep", srpm_path=str(dep_srpm)),
         }
 
-        failed_task = BuildTask(
+        building_task = BuildTask(
             package_name="dep", srpm_path=str(dep_srpm),
-            target="fedora-target", status=BuildStatus.FAILED
+            target="fedora-target", task_id=999, status=BuildStatus.BUILDING
         )
+
+        def mock_poll(tasks, **kwargs):
+            for t in tasks:
+                t.status = BuildStatus.FAILED
 
         with patch("vibebuild.builder.get_package_info_from_srpm") as mock_info:
             mock_info.return_value = PackageInfo(
@@ -710,8 +905,9 @@ class TestBuildWithDepsEdgeCases:
             )
             with patch.object(builder.resolver, "build_dependency_graph"):
                 with patch.object(builder.resolver, "get_build_chain", return_value=[["dep"]]):
-                    with patch.object(builder, "build_package", return_value=failed_task):
-                        result = builder.build_with_deps(str(srpm))
+                    with patch.object(builder, "_submit_build", return_value=building_task):
+                        with patch.object(builder, "_poll_builds", side_effect=mock_poll):
+                            result = builder.build_with_deps(str(srpm))
 
         assert "dep" in result.failed_packages
         assert result.success is False
@@ -768,3 +964,100 @@ class TestGetBuildStatusEdgeCases:
         result = builder.get_build_status(12345)
 
         assert result == BuildStatus.PENDING
+
+
+class TestBuildPackageAddPkg:
+    def test_add_pkg_called_before_build(self, tmp_path, mock_subprocess_run):
+        """build_package should call add-pkg before submitting the build."""
+        srpm = tmp_path / "test-pkg-1.0-1.src.rpm"
+        srpm.write_text("fake srpm")
+        mock_subprocess_run.return_value.returncode = 0
+        mock_subprocess_run.return_value.stdout = "Created task: 12345"
+        mock_subprocess_run.return_value.stderr = ""
+        builder = KojiBuilder(target="f42")
+
+        with patch("vibebuild.builder.get_package_info_from_srpm") as mock_info:
+            mock_info.return_value = PackageInfo(
+                name="test-pkg", version="1.0", release="1",
+                build_requires=[], source_urls=[]
+            )
+            builder.build_package(str(srpm), wait=False)
+
+        # Check that add-pkg was called (first subprocess call)
+        calls = mock_subprocess_run.call_args_list
+        add_pkg_call = calls[0][0][0]
+        assert "add-pkg" in add_pkg_call
+        assert "f42" in add_pkg_call
+        assert "test-pkg" in add_pkg_call
+        assert "--owner=kojiadmin" in add_pkg_call
+
+    def test_add_pkg_failure_logs_warning(self, tmp_path, mock_subprocess_run):
+        """build_package should warn but continue if add-pkg fails."""
+        srpm = tmp_path / "test-pkg-1.0-1.src.rpm"
+        srpm.write_text("fake srpm")
+
+        # First call (add-pkg) fails, second call (build) succeeds
+        mock_subprocess_run.side_effect = [
+            Mock(returncode=1, stderr="GenericError: some error", stdout=""),
+            Mock(returncode=0, stderr="", stdout="Created task: 12345"),
+        ]
+        builder = KojiBuilder(target="f42")
+
+        with patch("vibebuild.builder.get_package_info_from_srpm") as mock_info:
+            mock_info.return_value = PackageInfo(
+                name="test-pkg", version="1.0", release="1",
+                build_requires=[], source_urls=[]
+            )
+            task = builder.build_package(str(srpm), wait=False)
+
+        assert task.status == BuildStatus.BUILDING
+
+    def test_add_pkg_already_exists_ignored(self, tmp_path, mock_subprocess_run):
+        """build_package should silently ignore 'already exists' from add-pkg."""
+        srpm = tmp_path / "test-pkg-1.0-1.src.rpm"
+        srpm.write_text("fake srpm")
+
+        mock_subprocess_run.side_effect = [
+            Mock(returncode=1, stderr="package already exists in tag", stdout=""),
+            Mock(returncode=0, stderr="", stdout="Created task: 12345"),
+        ]
+        builder = KojiBuilder(target="f42")
+
+        with patch("vibebuild.builder.get_package_info_from_srpm") as mock_info:
+            mock_info.return_value = PackageInfo(
+                name="test-pkg", version="1.0", release="1",
+                build_requires=[], source_urls=[]
+            )
+            task = builder.build_package(str(srpm), wait=False)
+
+        assert task.status == BuildStatus.BUILDING
+
+
+class TestBuildWithDepsEnsureRepoReady:
+    def test_ensure_repo_ready_called_at_start(self, tmp_path, mock_subprocess_run):
+        """build_with_deps should call _ensure_repo_ready at the start."""
+        srpm = tmp_path / "test.src.rpm"
+        srpm.write_text("fake srpm")
+        mock_subprocess_run.return_value.returncode = 0
+        mock_subprocess_run.return_value.stdout = "Created task: 12345"
+        builder = KojiBuilder()
+
+        complete_task = BuildTask(
+            package_name="test", srpm_path=str(srpm),
+            target="fedora-target", task_id=12345,
+            status=BuildStatus.COMPLETE
+        )
+
+        with patch("vibebuild.builder.get_package_info_from_srpm") as mock_info:
+            mock_info.return_value = PackageInfo(
+                name="test", version="1.0", release="1",
+                build_requires=[], source_urls=[]
+            )
+            with patch.object(builder, "_ensure_repo_ready") as mock_ensure:
+                with patch.object(builder.resolver, "build_dependency_graph"):
+                    with patch.object(builder.resolver, "get_build_chain", return_value=[]):
+                        with patch.object(builder, "build_package", return_value=complete_task):
+                            builder.build_with_deps(str(srpm))
+
+            # Called once at the start of build_with_deps (no longer before final build)
+            assert mock_ensure.call_count == 1

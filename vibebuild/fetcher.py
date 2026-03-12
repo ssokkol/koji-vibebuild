@@ -131,86 +131,90 @@ class SRPMFetcher:
             msg += "\n" + "\n".join(f"  {e}" for e in last_errors)
         raise SRPMNotFoundError(msg)
 
+    def _resolve_rawhide_tag(self, server) -> Optional[str]:
+        """Determine the current rawhide Fedora version tag by querying Koji."""
+        try:
+            # getBuildTarget('rawhide') returns the target info including dest_tag
+            target_info = server.getBuildTarget("rawhide")
+            if target_info and target_info.get("dest_tag_name"):
+                # dest_tag_name is like "f44" for current rawhide
+                return target_info["dest_tag_name"]
+        except Exception:
+            pass
+        # Fallback: probe tags from high to low
+        for ver in range(45, 38, -1):
+            try:
+                tag = server.getTag(f"f{ver}")
+                if tag:
+                    return f"f{ver}"
+            except Exception:
+                continue
+        return None
+
     def _download_from_koji(
         self, package_name: str, version: Optional[str], source: SRPMSource
     ) -> str:
-        """Download SRPM using koji CLI."""
-        env = self._get_env()
+        """Download SRPM from Koji using XML-RPC API (no CLI needed)."""
+        import xmlrpc.client
+
         try:
-            return self._download_from_koji_impl(package_name, version, source, env)
-        except FileNotFoundError as e:
-            raise SRPMNotFoundError(
-                "koji CLI not found. Install it to download SRPMs: "
-                "dnf install koji (Fedora) or equivalent."
-            ) from e
+            server = xmlrpc.client.ServerProxy(source.koji_server, allow_none=True)
+        except Exception as e:
+            raise SRPMNotFoundError(f"Cannot connect to Koji: {e}")
 
-    def _download_from_koji_impl(
-        self,
-        package_name: str,
-        version: Optional[str],
-        source: SRPMSource,
-        env: Optional[dict],
-    ) -> str:
-        """Actual Koji download logic (may raise FileNotFoundError if koji missing)."""
-        cmd = ["koji", f"--server={source.koji_server}"]
-
-        if version:
-            cmd.extend(["download-build", "--arch=src", f"{package_name}-{version}"])
+        # Find the latest build
+        if self.fedora_release == "rawhide":
+            tag = self._resolve_rawhide_tag(server)
         else:
-            result = subprocess.run(
-                [
-                    "koji",
-                    f"--server={source.koji_server}",
-                    "latest-build",
-                    f"f{self.fedora_release.replace('rawhide', '42')}",
-                    package_name,
-                ],
-                capture_output=True,
-                text=True,
-                env=env,
-            )
-
-            if result.returncode != 0 or not result.stdout.strip():
-                result = subprocess.run(
-                    [
-                        "koji",
-                        f"--server={source.koji_server}",
-                        "latest-build",
-                        "rawhide",
-                        package_name,
-                    ],
-                    capture_output=True,
-                    text=True,
-                    env=env,
-                )
-
-            if result.returncode != 0 or not result.stdout.strip():
-                raise SRPMNotFoundError(f"Package {package_name} not found in Koji")
-
-            lines = result.stdout.strip().split("\n")
-            for line in lines:
-                if package_name in line:
-                    nvr = line.split()[0]
-                    cmd.extend(["download-build", "--arch=src", nvr])
-                    break
+            tag = f"f{self.fedora_release}" if not self.fedora_release.startswith("f") else self.fedora_release
+        try:
+            if version:
+                build_info = server.getBuild(f"{package_name}-{version}")
             else:
-                raise SRPMNotFoundError(f"Could not parse Koji output for {package_name}")
+                builds = server.getLatestBuilds(tag, None, package_name)
+                if not builds:
+                    builds = server.getLatestBuilds("rawhide", None, package_name)
+                if not builds:
+                    # Try the previous release tag as well
+                    tag_num = int(tag.lstrip("f")) if tag.startswith("f") and tag[1:].isdigit() else 0
+                    if tag_num > 0:
+                        for prev in range(tag_num - 1, tag_num - 4, -1):
+                            builds = server.getLatestBuilds(f"f{prev}", None, package_name)
+                            if builds:
+                                break
+                if not builds:
+                    raise SRPMNotFoundError(f"Package {package_name} not found in Koji")
+                build_info = builds[0]
+        except SRPMNotFoundError:
+            raise
+        except Exception as e:
+            raise SRPMNotFoundError(f"Package {package_name} not found in Koji")
+
+        if not build_info:
+            raise SRPMNotFoundError(f"Package {package_name} not found in Koji")
+
+        nvr = build_info["nvr"]
+        name = build_info["name"]
+        ver = build_info["version"]
+        rel = build_info["release"]
+
+        # Construct download URL
+        base_url = source.base_url.rstrip("/")
+        srpm_url = f"{base_url}/{name}/{ver}/{rel}/src/{nvr}.src.rpm"
 
         download_path = self.download_dir / package_name
         download_path.mkdir(parents=True, exist_ok=True)
+        dest = download_path / f"{nvr}.src.rpm"
 
-        result = subprocess.run(
-            cmd, cwd=str(download_path), capture_output=True, text=True, timeout=300, env=env
-        )
+        if dest.exists():
+            return str(dest)
 
-        if result.returncode != 0:
-            raise SRPMNotFoundError(f"Failed to download: {result.stderr}")
+        self._download_file(srpm_url, dest)
 
-        srpms = list(download_path.glob("*.src.rpm"))
-        if not srpms:
-            raise SRPMNotFoundError(f"No SRPM found after download for {package_name}")
+        if not dest.exists():
+            raise SRPMNotFoundError(f"Failed to download SRPM from {srpm_url}")
 
-        return str(srpms[0])
+        return str(dest)
 
     def _download_from_src(
         self, package_name: str, version: Optional[str], source: SRPMSource

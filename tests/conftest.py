@@ -75,6 +75,7 @@ def mock_koji_client():
         "gcc": "gcc-13.0-1.fc40",
     }
     client.search_package.return_value = []
+    client.has_external_repos.return_value = False
     return client
 
 
