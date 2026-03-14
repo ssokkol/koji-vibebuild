@@ -260,7 +260,7 @@ class KojiBuilder:
         last_state = ""
 
         while time.time() - start < timeout:
-            result = self._run_koji("taskinfo", str(task_id))
+            result = self._run_koji("taskinfo", str(task_id), timeout=120)
             if result.returncode != 0:
                 logger.warning(f"  [{nvr}] Could not get task info")
                 time.sleep(interval)
@@ -329,7 +329,7 @@ class KojiBuilder:
         while pending and time.time() - start < timeout:
             completed_ids = []
             for task_id, task in pending.items():
-                result = self._run_koji("taskinfo", str(task_id))
+                result = self._run_koji("taskinfo", str(task_id), timeout=120)
                 if result.returncode != 0:
                     continue
 

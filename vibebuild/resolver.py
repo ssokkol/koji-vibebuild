@@ -114,8 +114,8 @@ class KojiClient:
         return builds
 
     def package_exists(self, package: str, tag: str) -> bool:
-        """Check if package exists in tag."""
-        result = self._run_koji_command("list-tagged", tag, "--package", package, "--quiet")
+        """Check if package has a build tagged in the given tag (including inherited)."""
+        result = self._run_koji_command("list-tagged", tag, package, "--quiet", "--inherit")
         return bool(result.stdout.strip())
 
     def has_external_repos(self, tag: str) -> bool:
@@ -190,11 +190,18 @@ class DependencyResolver:
         """
         if package_name in self.available_packages:
             return True
-        # Also check with name resolver
         if self.name_resolver:
+            # Try virtual provide resolution (e.g. python3dist(foo) -> python3-foo)
             resolved = self.name_resolver.resolve(package_name)
             if resolved in self.available_packages:
                 return True
+            # Try RPM -> SRPM name mapping (e.g. python3-foo -> python-foo)
+            try:
+                for candidate in self.name_resolver.resolve_srpm_name(resolved):
+                    if candidate in self.available_packages:
+                        return True
+            except (TypeError, AttributeError):
+                pass
         return False
 
     def find_missing_deps(
@@ -234,6 +241,24 @@ class DependencyResolver:
                 if self.koji.package_exists(name, self.koji_tag):
                     continue
 
+            # Try SRPM name mapping (e.g. python3-tomli -> python-tomli)
+            srpm_name = None
+            if self.name_resolver:
+                try:
+                    for candidate in self.name_resolver.resolve_srpm_name(resolved_name):
+                        if candidate in self.available_packages:
+                            srpm_name = candidate
+                            break
+                        if self.koji.package_exists(candidate, self.koji_tag):
+                            srpm_name = candidate
+                            break
+                except (TypeError, AttributeError):
+                    pass
+
+            # If we found the SRPM name and it has a build, it's available
+            if srpm_name and self.koji.package_exists(srpm_name, self.koji_tag):
+                continue
+
             # If external repos are configured, deps NOT registered in our
             # local Koji are assumed available from the external repos.
             # Only deps that ARE our packages (registered but not yet built)
@@ -248,7 +273,8 @@ class DependencyResolver:
                     )
                     continue
 
-            missing.append(resolved_name)
+            # Use SRPM name for the missing list
+            missing.append(srpm_name or resolved_name)
 
         return missing
 
