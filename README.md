@@ -1,143 +1,156 @@
 # VibeBuild
 
-**Koji extension for automatic dependency resolution and building**
+**Расширение Koji для автоматического разрешения зависимостей и сборки**
 
 [![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-VibeBuild extends Koji functionality by adding automatic dependency resolution. When you build a package, VibeBuild automatically finds missing BuildRequires, downloads their SRPMs from Fedora, and builds the entire dependency chain in the correct order.
+VibeBuild расширяет функциональность Koji, добавляя автоматическое разрешение зависимостей. При сборке пакета VibeBuild автоматически находит недостающие BuildRequires, скачивает их SRPM из Fedora и собирает всю цепочку зависимостей в правильном порядке.
 
-## Features
+## Возможности
 
-- **Automatic dependency analysis** — parsing SRPM/spec files to extract BuildRequires
-- **Smart package name resolution** — automatic conversion of virtual provides (`python3dist(requests)`, `pkgconfig(glib-2.0)`, `perl(File::Path)`) and RPM macros (`%{python3_pkgversion}`) to real package names
-- **ML-based name resolution** — optional scikit-learn model (TF-IDF + KNN) as fallback when rule-based patterns don't match
-- **SRPM downloading** — automatic download of missing packages from Fedora Koji, with smart SRPM name mapping (e.g. `python3-requests` -> `python-requests`)
-- **DAG construction** — determining build order based on dependencies
-- **Build orchestration** — sequential building with repository regeneration waiting
-- **CLI interface** — convenient command line tool with flexible options
+- **Автоматический анализ зависимостей** — парсинг SRPM/spec-файлов для извлечения BuildRequires
+- **Умное разрешение имён пакетов** — автоматическое преобразование виртуальных provides (`python3dist(requests)`, `pkgconfig(glib-2.0)`, `perl(File::Path)`) и RPM-макросов (`%{python3_pkgversion}`) в реальные имена пакетов
+- **ML-разрешение имён** — опциональная модель scikit-learn (TF-IDF + KNN) как запасной вариант, когда правила не срабатывают
+- **Скачивание SRPM** — автоматическое скачивание недостающих пакетов из Fedora Koji с умным маппингом имён SRPM (например, `python3-requests` -> `python-requests`)
+- **Построение DAG** — определение порядка сборки на основе зависимостей
+- **Оркестрация сборки** — последовательная сборка с ожиданием регенерации репозитория
+- **CLI-интерфейс** — удобный инструмент командной строки с гибкими опциями
 
-## Quick Start
+## Быстрый старт
 
-### Installation
+### Установка
 
-From PyPI (when published):
+Из PyPI (когда будет опубликован):
 
 ```bash
 pip install vibebuild
-pip install vibebuild[ml]   # optional: ML-based name resolution
+pip install vibebuild[ml]   # опционально: ML-разрешение имён
 ```
 
-From source (recommended for development and verification):
+Из исходников (рекомендуется для разработки и проверки):
 
 ```bash
 git clone https://github.com/vibebuild/vibebuild.git
 cd vibebuild
 pip install -e .
-pip install -e ".[ml]"     # optional: ML dependencies
-pip install -e ".[dev]"    # for tests: pytest, black, etc.
-pip install -e ".[dev,ml]" # both dev and ML
+pip install -e ".[ml]"     # опционально: ML-зависимости
+pip install -e ".[dev]"    # для тестов: pytest, black и др.
+pip install -e ".[dev,ml]" # разработка и ML вместе
 ```
 
-### Usage
+### Использование
 
-Basic form: `vibebuild [OPTIONS] SRPM` or `vibebuild [OPTIONS] TARGET SRPM`.
-SRPM can be a path to a `.src.rpm` file or a **package name** (e.g. `python3`).
-When TARGET is omitted, it is read from the `target` key in `~/.koji/config [koji]`.
+Базовая форма: `vibebuild [ОПЦИИ] SRPM` или `vibebuild [ОПЦИИ] TARGET SRPM`.
+SRPM может быть путём к файлу `.src.rpm` или **именем пакета** (например, `python3`).
+Если TARGET не указан, он берётся из ключа `target` в `~/.koji/config [koji]`.
 
 ```bash
-# One command: target from ~/.koji/config, download SRPM by name and build
+# Одна команда: target из ~/.koji/config, скачать SRPM по имени и собрать
 vibebuild python-requests
 vibebuild python3
 
-# Explicit target (or if target is not in config)
+# Явное указание target (или если target не в конфиге)
 vibebuild fedora-target python-requests
 vibebuild fedora-target my-package-1.0-1.fc40.src.rpm
 
-# Scratch build (not tagged)
+# Scratch-сборка (без тегирования)
 vibebuild --scratch fedora-target my-package.src.rpm
 
-# Build without resolving dependencies (single package only)
+# Сборка без разрешения зависимостей (только один пакет)
 vibebuild --no-deps fedora-target my-package.src.rpm
 
-# Analyze dependencies without building (one argument: path to SRPM)
+# Анализ зависимостей без сборки (один аргумент: путь к SRPM)
 vibebuild --analyze-only my-package.src.rpm
 
-# Download SRPM from Fedora by package name (requires koji CLI)
+# Скачать SRPM из Fedora по имени пакета (требуется koji CLI)
 vibebuild --download-only python-requests
 
-# Dry run — show build order and what would be built
+# Пробный запуск — показать порядок сборки и что будет собрано
 vibebuild --dry-run my-package.src.rpm
 
-# Name resolution options
-vibebuild --no-ml fedora-target my-package.src.rpm              # rules only
-vibebuild --no-name-resolution fedora-target my-package.src.rpm # raw names
+# Опции разрешения имён
+vibebuild --no-ml fedora-target my-package.src.rpm              # только правила
+vibebuild --no-name-resolution fedora-target my-package.src.rpm # сырые имена
 vibebuild --ml-model /path/to/model.joblib fedora-target my-package.src.rpm
 ```
 
-For a step-by-step public demo (download, analyze, dry-run, build), see [DEMO.md](DEMO.md).
+Пошаговая демонстрация (скачивание, анализ, dry-run, сборка) — см. [DEMO.md](DEMO.md).
 
-### Verification
+### Проверка
 
-After installation you can confirm everything works:
+После установки можно убедиться, что всё работает:
 
 ```bash
 vibebuild --version
-vibebuild --help          # short list of common options
-vibebuild --help-all      # full list of all options
+vibebuild --help          # краткий список основных опций
+vibebuild --help-all      # полный список всех опций
 ```
 
-If you installed with `[dev]`, run tests from the project root:
+Если установлен `[dev]`, запустите тесты из корня проекта:
 
 ```bash
 pytest
 ```
 
-To verify dependency resolution on a real package (requires `koji` CLI and network access to Fedora Koji):
+Для проверки разрешения зависимостей на реальном пакете (требуется `koji` CLI и доступ к Fedora Koji):
 
 ```bash
 vibebuild --download-only python-requests
-vibebuild --analyze-only python-requests-*.src.rpm   # use the downloaded file
-vibebuild --dry-run python-requests          # target from ~/.koji/config
-vibebuild --dry-run fedora-43 python-requests  # explicit target
+vibebuild --analyze-only python-requests-*.src.rpm   # используем скачанный файл
+vibebuild --dry-run python-requests          # target из ~/.koji/config
+vibebuild --dry-run fedora-43 python-requests  # явный target
 ```
 
-Without `koji`, use any existing `.src.rpm` you have for `--analyze-only` and `--dry-run`. See [TESTING.md](docs/TESTING.md) for running the test suite.
+Без `koji` используйте любой имеющийся `.src.rpm` для `--analyze-only` и `--dry-run`. См. [TESTING.md](docs/TESTING.md) для запуска тестов.
 
-### Using with your own Koji server
+### Использование со своим Koji-сервером
 
-If you use Koji already, `vibebuild` reads `~/.koji/config` (and `/etc/koji.conf`) for `server`, `weburl`, `cert`, and `serverca`, so you often only need to pass `--server` if overriding. For all options run `vibebuild --help-all`.
+Если у вас уже есть Koji, `vibebuild` читает `~/.koji/config` (и `/etc/koji.conf`) для получения `server`, `weburl`, `cert` и `serverca`, поэтому часто достаточно передать `--server` для переопределения. Все опции: `vibebuild --help-all`.
 
 ```bash
-# After configuring ~/.koji/config with target = my-target:
+# После настройки ~/.koji/config с target = my-target:
 vibebuild my-package.src.rpm
 
 vibebuild --server https://koji.example.com/kojihub my-target my-package.src.rpm
-# or with explicit certs:
+# или с явными сертификатами:
 vibebuild --server https://koji.example.com/kojihub --cert ~/.koji/client.pem \
   --serverca ~/.koji/serverca.crt --build-tag my-build my-target my-package.src.rpm
 ```
 
-## Koji Deployment
+## Локальный сервер (Docker)
 
-The repository includes an Ansible playbook for automatic Koji deployment on Fedora:
+В репозитории есть готовое Docker-окружение для локальной разработки и тестирования:
+
+```bash
+cd dev/koji-server
+make setup    # Полная настройка: сертификаты, БД, Hub, Builder, клиент
+```
+
+После настройки Koji доступен по адресу https://localhost:8443/koji.
+
+Подробнее см. [LOCAL_SETUP.md](docs/LOCAL_SETUP.md).
+
+## Развёртывание Koji
+
+В репозитории есть Ansible-плейбук для автоматического развёртывания Koji на Fedora:
 
 ```bash
 cd ansible
 
-# Configure inventory (set YOUR_VPS_IP and ansible_user)
+# Настройте inventory (укажите YOUR_VPS_IP и ansible_user)
 vim inventory/hosts.ini
 
-# Configure variables (FQDN, passwords, etc.)
+# Настройте переменные (FQDN, пароли и т.д.)
 vim group_vars/all.yml
 
-# Run playbook
+# Запустите плейбук
 ansible-playbook -i inventory/hosts.ini playbook.yml
 ```
 
-See [DEPLOYMENT.md](docs/DEPLOYMENT.md) for details.
+Подробнее см. [DEPLOYMENT.md](docs/DEPLOYMENT.md).
 
-## How It Works
+## Как это работает
 
 ```
 ┌─────────────────┐
@@ -146,75 +159,76 @@ See [DEPLOYMENT.md](docs/DEPLOYMENT.md) for details.
          │
          ▼
 ┌─────────────────┐     ┌─────────────────┐
-│    Analyzer     │────▶│  Parse SRPM     │
-│                 │     │  Extract deps   │
+│   Анализатор    │────▶│  Парсинг SRPM   │
+│                 │     │  Извлечение deps │
 └────────┬────────┘     └─────────────────┘
          │
          ▼
 ┌─────────────────┐     ┌─────────────────┐
-│ Name Resolver   │────▶│  Expand macros  │
-│ (rules + ML)    │     │  Resolve names  │
+│   Резолвер имён │────▶│ Раскрытие макр. │
+│ (правила + ML)  │     │ Разрешение имён │
 └────────┬────────┘     └─────────────────┘
          │
          ▼
 ┌─────────────────┐     ┌─────────────────┐
-│    Resolver     │────▶│  Check Koji     │
-│                 │     │  Build DAG      │
+│   Резолвер      │────▶│  Проверка Koji  │
+│   зависимостей  │     │  Построение DAG │
 └────────┬────────┘     └─────────────────┘
          │
          ▼
 ┌─────────────────┐     ┌─────────────────┐
-│    Fetcher      │────▶│  Download SRPM  │
-│                 │     │  from Fedora    │
+│   Загрузчик     │────▶│  Скачивание     │
+│                 │     │  SRPM из Fedora  │
 └────────┬────────┘     └─────────────────┘
          │
          ▼
 ┌─────────────────┐     ┌─────────────────┐
-│    Builder      │────▶│  koji build     │
+│   Сборщик       │────▶│  koji build     │
 │                 │     │  wait-repo      │
 └─────────────────┘     └─────────────────┘
 ```
 
-1. **Analyzer** — extracts BuildRequires from SRPM/spec file, expands RPM macros
-2. **Name Resolver** — converts virtual provides and macro-based names to real RPM package names (rule-based + optional ML fallback)
-3. **Resolver** — checks which dependencies are missing in Koji and builds dependency graph
-4. **Fetcher** — downloads SRPMs for missing packages from Fedora, with smart SRPM name mapping
-5. **Builder** — builds packages in correct order, waiting for repository regeneration between builds
+1. **Анализатор** — извлекает BuildRequires из SRPM/spec-файла, раскрывает RPM-макросы
+2. **Резолвер имён** — преобразует виртуальные provides и имена на основе макросов в реальные имена RPM-пакетов (правила + опциональный ML)
+3. **Резолвер зависимостей** — проверяет, какие зависимости отсутствуют в Koji, и строит граф зависимостей
+4. **Загрузчик** — скачивает SRPM для недостающих пакетов из Fedora с умным маппингом имён
+5. **Сборщик** — собирает пакеты в правильном порядке, ожидая регенерацию репозитория между сборками
 
-## ML Model Training (optional)
+## Обучение ML-модели (опционально)
 
-VibeBuild includes scripts to train a custom ML model for package name resolution:
+VibeBuild включает скрипты для обучения ML-модели разрешения имён пакетов:
 
 ```bash
-# 1. Collect training data from Fedora repositories
+# 1. Сбор обучающих данных из репозиториев Fedora
 python scripts/collect_training_data.py --output data/training_data.json
 
-# 2. Train the model (alias data from vibebuild/data/alias_training.json is merged automatically)
+# 2. Обучение модели (алиасы из vibebuild/data/alias_training.json подмешиваются автоматически)
 python scripts/train_model.py --input data/training_data.json --output vibebuild/data/model.joblib
 ```
 
-The model uses TF-IDF character n-grams with K-Nearest Neighbors to predict real package names from virtual dependency strings. Training automatically merges aliases from `vibebuild/data/alias_training.json` (e.g. `python3` → `python3.12`), so that commands like `vibebuild --download-only python3` work when the model is installed. Use `--ml-model` to point to a custom model. See [DEPLOYMENT.md](docs/DEPLOYMENT.md) for details.
+Модель использует TF-IDF символьные n-граммы с K-Nearest Neighbors для предсказания реальных имён пакетов из строк виртуальных зависимостей. Обучение автоматически подмешивает алиасы из `vibebuild/data/alias_training.json` (например, `python3` → `python3.12`), чтобы команды вроде `vibebuild --download-only python3` работали при установленной модели. Используйте `--ml-model` для указания пользовательской модели. Подробнее см. [DEPLOYMENT.md](docs/DEPLOYMENT.md).
 
-## Requirements
+## Требования
 
 - **Python** 3.9+
-- **koji** CLI — required for `--download-only` (downloading SRPMs from Fedora Koji) and for building. Without it, those features are unavailable. Install: `sudo dnf install koji` (Fedora) or equivalent on your distribution.
-- **rpm-build**, **rpm2cpio** (for unpacking and building SRPMs; on Fedora: `dnf install rpm-build`)
-- Access to a Koji server (e.g. Fedora Koji for download; your own for building)
+- **koji** CLI — требуется для `--download-only` (скачивание SRPM из Fedora Koji) и для сборки. Без него эти функции недоступны. Установка: `sudo dnf install koji` (Fedora) или эквивалент для вашего дистрибутива.
+- **rpm-build**, **rpm2cpio** (для распаковки и сборки SRPM; на Fedora: `dnf install rpm-build`)
+- Доступ к серверу Koji (например, Fedora Koji для скачивания; собственный для сборки)
 
-**Optional (ML-based name resolution):** `scikit-learn >= 1.3`, `joblib >= 1.3` — install with `pip install vibebuild[ml]`.
+**Опционально (ML-разрешение имён):** `scikit-learn >= 1.3`, `joblib >= 1.3` — установка: `pip install vibebuild[ml]`.
 
-## Documentation
+## Документация
 
-- [DEMO.md](DEMO.md) — step-by-step public demo (one-command build, download, analyze, dry-run)
-- [PROJECT_OVERVIEW.md](docs/PROJECT_OVERVIEW.md) — full project description with diagrams
-- [VPS_SETUP.md](docs/VPS_SETUP.md) — VPS server creation and setup guide
-- [ARCHITECTURE.md](docs/ARCHITECTURE.md) — system architecture
-- [API.md](docs/API.md) — API documentation
-- [DEPLOYMENT.md](docs/DEPLOYMENT.md) — deployment guide
-- [TESTING.md](docs/TESTING.md) — testing guide
-- [CONTRIBUTING.md](CONTRIBUTING.md) — how to contribute
+- [DEMO.md](DEMO.md) — пошаговая демонстрация (сборка одной командой, скачивание, анализ, dry-run)
+- [PROJECT_OVERVIEW.md](docs/PROJECT_OVERVIEW.md) — полное описание проекта с диаграммами
+- [LOCAL_SETUP.md](docs/LOCAL_SETUP.md) — настройка локального сервера Koji в Docker
+- [VPS_SETUP.md](docs/VPS_SETUP.md) — создание и настройка VPS-сервера
+- [ARCHITECTURE.md](docs/ARCHITECTURE.md) — архитектура системы
+- [API.md](docs/API.md) — документация API
+- [DEPLOYMENT.md](docs/DEPLOYMENT.md) — руководство по развёртыванию
+- [TESTING.md](docs/TESTING.md) — руководство по тестированию
+- [CONTRIBUTING.md](CONTRIBUTING.md) — как внести вклад
 
-## License
+## Лицензия
 
-MIT License. See [LICENSE](LICENSE) for details.
+MIT License. Подробнее см. [LICENSE](LICENSE).

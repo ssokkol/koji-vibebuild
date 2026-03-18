@@ -1,26 +1,26 @@
-# VibeBuild API Reference
+# Справочник API VibeBuild
 
-## Modules
+## Модули
 
-- [analyzer](#analyzer) — SRPM and spec file parsing
-- [name_resolver](#name_resolver) — package name resolution (rules + ML)
-- [ml_resolver](#ml_resolver) — ML-based package name prediction
-- [resolver](#resolver) — dependency resolution
-- [fetcher](#fetcher) — SRPM downloading
-- [builder](#builder) — build orchestration
-- [exceptions](#exceptions) — exceptions
+- [analyzer](#analyzer) — парсинг SRPM и spec-файлов
+- [name_resolver](#name_resolver) — разрешение имён пакетов (правила + ML)
+- [ml_resolver](#ml_resolver) — ML-предсказание имён пакетов
+- [resolver](#resolver) — разрешение зависимостей
+- [fetcher](#fetcher) — скачивание SRPM
+- [builder](#builder) — оркестрация сборки
+- [exceptions](#exceptions) — исключения
 
 ---
 
 ## analyzer
 
-Module for analyzing SRPM and spec files.
+Модуль для анализа SRPM и spec-файлов.
 
-### Classes
+### Классы
 
 #### `BuildRequirement`
 
-Represents a single build dependency.
+Представляет одну зависимость сборки.
 
 ```python
 @dataclass
@@ -30,12 +30,12 @@ class BuildRequirement:
     operator: Optional[str] = None
 ```
 
-**Attributes:**
-- `name` — package name
-- `version` — version (if specified)
-- `operator` — comparison operator (`>=`, `<=`, `>`, `<`, `=`)
+**Атрибуты:**
+- `name` — имя пакета
+- `version` — версия (если указана)
+- `operator` — оператор сравнения (`>=`, `<=`, `>`, `<`, `=`)
 
-**Example:**
+**Пример:**
 ```python
 req = BuildRequirement(name="python3-devel", version="3.9", operator=">=")
 print(str(req))  # "python3-devel >= 3.9"
@@ -45,7 +45,7 @@ print(str(req))  # "python3-devel >= 3.9"
 
 #### `PackageInfo`
 
-Package information extracted from spec file.
+Информация о пакете, извлечённая из spec-файла.
 
 ```python
 @dataclass
@@ -57,71 +57,71 @@ class PackageInfo:
     source_urls: list[str]
 ```
 
-**Attributes:**
-- `name` — package name
-- `version` — version
-- `release` — release
-- `build_requires` — list of build dependencies
-- `source_urls` — source URLs
+**Атрибуты:**
+- `name` — имя пакета
+- `version` — версия
+- `release` — релиз
+- `build_requires` — список зависимостей сборки
+- `source_urls` — URL исходников
 
-**Properties:**
-- `nvr` — Name-Version-Release string
+**Свойства:**
+- `nvr` — строка Name-Version-Release
 
 ---
 
 #### `SpecAnalyzer`
 
-Spec file analyzer.
+Анализатор spec-файлов.
 
 ```python
 class SpecAnalyzer:
     def analyze_spec(self, spec_path: str) -> PackageInfo: ...
 ```
 
-**Methods:**
+**Методы:**
 
 ##### `analyze_spec(spec_path: str) -> PackageInfo`
 
-Parses spec file and extracts package information.
+Парсит spec-файл и извлекает информацию о пакете.
 
-**Parameters:**
-- `spec_path` — path to .spec file
+**Параметры:**
+- `spec_path` — путь к .spec-файлу
 
-**Returns:**
-- `PackageInfo` with package data
+**Возвращает:**
+- `PackageInfo` с данными пакета
 
-**Exceptions:**
-- `FileNotFoundError` — file not found
-- `SpecParseError` — spec parsing error
+**Исключения:**
+- `FileNotFoundError` — файл не найден
+- `SpecParseError` — ошибка парсинга spec
 
-**Example:**
+**Пример:**
 ```python
 analyzer = SpecAnalyzer()
 info = analyzer.analyze_spec("/path/to/package.spec")
-print(f"Package: {info.name}-{info.version}")
+print(f"Пакет: {info.name}-{info.version}")
 for req in info.build_requires:
-    print(f"  Requires: {req}")
+    print(f"  Требуется: {req}")
 ```
 
 ---
 
-### Functions
+### Функции
 
 #### `get_build_requires(srpm_path: str) -> list[str]`
 
-Extracts BuildRequires list from SRPM file.
+Извлекает список BuildRequires из SRPM-файла.
 
-**Parameters:**
-- `srpm_path` — path to .src.rpm file
+**Параметры:**
+- `srpm_path` — путь к .src.rpm файлу
 
-**Returns:**
-- List of package names (without versions)
+**Возвращает:**
+- Список имён пакетов (без версий)
 
-**Exceptions:**
-- `FileNotFoundError` — SRPM not found
-- `InvalidSRPMError` — invalid SRPM
+**Исключения:**
+- `FileNotFoundError` — SRPM не найден
+- `InvalidSRPMError` — некорректный SRPM
 
-**Example:**
+**Пример:**
 ```python
 requires = get_build_requires("my-package-1.0-1.fc40.src.rpm")
 print(requires)  # ["python3-devel", "gcc", "make"]
@@ -131,15 +131,15 @@ print(requires)  # ["python3-devel", "gcc", "make"]
 
 #### `get_package_info_from_srpm(srpm_path: str) -> PackageInfo`
 
-Extracts complete package information from SRPM.
+Извлекает полную информацию о пакете из SRPM.
 
-**Parameters:**
-- `srpm_path` — path to .src.rpm file
+**Параметры:**
+- `srpm_path` — путь к .src.rpm файлу
 
-**Returns:**
-- `PackageInfo` with package data
+**Возвращает:**
+- `PackageInfo` с данными пакета
 
-**Example:**
+**Пример:**
 ```python
 info = get_package_info_from_srpm("my-package-1.0-1.fc40.src.rpm")
 print(f"NVR: {info.nvr}")
@@ -149,13 +149,13 @@ print(f"NVR: {info.nvr}")
 
 ## name_resolver
 
-Module for rule-based package name resolution with optional ML fallback.
+Модуль для разрешения имён пакетов на основе правил с опциональным ML-резервом.
 
-### Constants
+### Константы
 
 #### `SYSTEM_MACROS`
 
-Dictionary of known RPM system macros for expanding `%{...}` in dependency names.
+Словарь известных системных RPM-макросов для раскрытия `%{...}` в именах зависимостей.
 
 ```python
 SYSTEM_MACROS: dict[str, str] = {
@@ -166,7 +166,7 @@ SYSTEM_MACROS: dict[str, str] = {
     "_prefix": "/usr",
     "_bindir": "/usr/bin",
     "_libdir": "/usr/lib64",
-    # ... 18 macros total
+    # ... всего 18 макросов
 }
 ```
 
@@ -174,16 +174,16 @@ SYSTEM_MACROS: dict[str, str] = {
 
 #### `PROVIDE_PATTERNS`
 
-List of compiled regex patterns for resolving virtual RPM provides.
+Список скомпилированных regex-паттернов для разрешения виртуальных RPM provides.
 
 ```python
 PROVIDE_PATTERNS: list[tuple[re.Pattern, callable]]
-# 9 patterns: python3dist, pkgconfig, perl, rubygem, npm, cmake, tex, golang, mvn
+# 9 паттернов: python3dist, pkgconfig, perl, rubygem, npm, cmake, tex, golang, mvn
 ```
 
-**Examples:**
+**Примеры:**
 
-| Input | Pattern | Output |
+| Вход | Паттерн | Выход |
 |---|---|---|
 | `python3dist(requests)` | `python(\d*)dist\((.+)\)` | `python3-requests` |
 | `pkgconfig(glib-2.0)` | `pkgconfig\((.+)\)` | `glib-2.0-devel` |
@@ -197,82 +197,82 @@ PROVIDE_PATTERNS: list[tuple[re.Pattern, callable]]
 
 ---
 
-### Classes
+### Классы
 
 #### `PackageNameResolver`
 
-Rule-based resolver with optional ML fallback.
+Резолвер на основе правил с опциональным ML-резервом.
 
 ```python
 class PackageNameResolver:
     def __init__(self, ml_resolver=None): ...
 ```
 
-**Parameters:**
-- `ml_resolver` — optional `MLPackageResolver` instance for ML fallback
+**Параметры:**
+- `ml_resolver` — опциональный экземпляр `MLPackageResolver` для ML-резерва
 
-**Methods:**
+**Методы:**
 
 ##### `resolve(dep_name: str) -> str`
 
-Resolve a dependency name to a real RPM package name.
+Разрешает имя зависимости в реальное имя RPM-пакета.
 
-**Pipeline:** cache -> expand macros -> virtual provide patterns -> ML fallback -> return expanded name as-is.
+**Конвейер:** кэш -> раскрытие макросов -> паттерны виртуальных provides -> ML-резерв -> возврат раскрытого имени как есть.
 
-**Parameters:**
-- `dep_name` — dependency name from spec file (e.g. `"python3dist(requests)"`)
+**Параметры:**
+- `dep_name` — имя зависимости из spec-файла (например, `"python3dist(requests)"`)
 
-**Returns:**
-- Resolved RPM package name (e.g. `"python3-requests"`)
+**Возвращает:**
+- Разрешённое имя RPM-пакета (например, `"python3-requests"`)
 
-**Example:**
+**Пример:**
 ```python
 resolver = PackageNameResolver()
 resolver.resolve("python3dist(requests)")   # "python3-requests"
 resolver.resolve("pkgconfig(glib-2.0)")     # "glib-2.0-devel"
 resolver.resolve("%{python3_pkgversion}-devel")  # "3-devel"
-resolver.resolve("gcc")                     # "gcc" (unchanged)
+resolver.resolve("gcc")                     # "gcc" (без изменений)
 ```
 
 ---
 
 ##### `expand_macros(name: str) -> str`
 
-Expand RPM macros in a name using `SYSTEM_MACROS`.
+Раскрывает RPM-макросы в имени, используя `SYSTEM_MACROS`.
 
-Handles `%{macro}`, `%{?macro}` (conditional), and nested macros.
+Обрабатывает `%{macro}`, `%{?macro}` (условные) и вложенные макросы.
 
-**Parameters:**
-- `name` — name containing RPM macros
+**Параметры:**
+- `name` — имя, содержащее RPM-макросы
 
-**Returns:**
-- Name with known macros expanded
+**Возвращает:**
+- Имя с раскрытыми известными макросами
 
 ---
 
 ##### `resolve_virtual_provide(name: str) -> Optional[str]`
 
-Try to resolve a virtual provide name using `PROVIDE_PATTERNS`.
+Пытается разрешить имя виртуального provide через `PROVIDE_PATTERNS`.
 
-**Parameters:**
-- `name` — dependency name that may be a virtual provide
+**Параметры:**
+- `name` — имя зависимости, которое может быть виртуальным provide
 
-**Returns:**
-- Resolved package name, or `None` if no pattern matched
+**Возвращает:**
+- Разрешённое имя пакета или `None`, если ни один паттерн не совпал
 
 ---
 
 ##### `resolve_srpm_name(rpm_name: str) -> list[str]`
 
-Map an RPM binary package name to possible SRPM names.
+Преобразует имя бинарного RPM-пакета в возможные имена SRPM.
 
-**Parameters:**
-- `rpm_name` — RPM binary package name
+**Параметры:**
+- `rpm_name` — имя бинарного RPM-пакета
 
-**Returns:**
-- List of possible SRPM names, ordered by likelihood
+**Возвращает:**
+- Список возможных имён SRPM, упорядоченных по вероятности
 
-**Example:**
+**Пример:**
 ```python
 resolver = PackageNameResolver()
 resolver.resolve_srpm_name("python3-requests")  # ["python-requests", "python3-requests"]
@@ -285,50 +285,50 @@ resolver.resolve_srpm_name("gcc")                # ["gcc"]
 
 ## ml_resolver
 
-ML-based package name resolver using TF-IDF and K-Nearest Neighbors. **Optional** -- requires `scikit-learn` (`pip install vibebuild[ml]`).
+ML-резолвер имён пакетов на основе TF-IDF и K-Nearest Neighbors. **Опциональный** — требуется `scikit-learn` (`pip install vibebuild[ml]`).
 
-### Classes
+### Классы
 
 #### `MLPackageResolver`
 
-ML resolver that predicts RPM package names from dependency strings.
+ML-резолвер, предсказывающий имена RPM-пакетов по строкам зависимостей.
 
 ```python
 class MLPackageResolver:
     def __init__(self, model_path: Optional[str] = None): ...
 ```
 
-**Parameters:**
-- `model_path` — path to saved model file (joblib). Defaults to `vibebuild/data/model.joblib`
+**Параметры:**
+- `model_path` — путь к файлу сохранённой модели (joblib). По умолчанию: `vibebuild/data/model.joblib`
 
-If the model file exists at the given path, it is loaded automatically on construction.
+Если файл модели существует по указанному пути, он автоматически загружается при создании.
 
-**Attributes:**
-- `confidence_threshold` — minimum cosine similarity for a prediction (default: `0.3`)
+**Атрибуты:**
+- `confidence_threshold` — минимальное косинусное сходство для предсказания (по умолчанию: `0.3`)
 
-**Methods:**
+**Методы:**
 
 ##### `is_available() -> bool`
 
-Check if the resolver is ready to make predictions.
+Проверяет, готов ли резолвер к предсказаниям.
 
-**Returns:**
-- `True` if scikit-learn is installed AND a model has been loaded
+**Возвращает:**
+- `True`, если scikit-learn установлен И модель загружена
 
 ---
 
 ##### `train(data: list[dict]) -> None`
 
-Train the model on provide-to-package mapping data.
+Обучает модель на данных маппинга provide-to-package.
 
-**Parameters:**
-- `data` — list of dicts with keys `"provide"`, `"rpm_name"`, `"srpm_name"`
+**Параметры:**
+- `data` — список словарей с ключами `"provide"`, `"rpm_name"`, `"srpm_name"`
 
-**Raises:**
-- `RuntimeError` — if scikit-learn is not installed
-- `ValueError` — if data is empty
+**Исключения:**
+- `RuntimeError` — если scikit-learn не установлен
+- `ValueError` — если данные пусты
 
-**Example:**
+**Пример:**
 ```python
 resolver = MLPackageResolver()
 resolver.train([
@@ -341,38 +341,38 @@ resolver.train([
 
 ##### `predict(dep_name: str) -> Optional[dict]`
 
-Predict the RPM package name for a dependency string.
+Предсказывает имя RPM-пакета для строки зависимости.
 
-**Parameters:**
-- `dep_name` — dependency name (e.g. `"python3dist(requests)"`)
+**Параметры:**
+- `dep_name` — имя зависимости (например, `"python3dist(requests)"`)
 
-**Returns:**
-- Dict `{"rpm_name": ..., "srpm_name": ...}` or `None` if confidence is too low
+**Возвращает:**
+- Словарь `{"rpm_name": ..., "srpm_name": ...}` или `None`, если уверенность слишком низкая
 
 ---
 
 ##### `save(path: str) -> None`
 
-Save the trained model to disk (joblib format).
+Сохраняет обученную модель на диск (формат joblib).
 
 ##### `load(path: str) -> None`
 
-Load a trained model from disk.
+Загружает обученную модель с диска.
 
-**Raises:**
-- `FileNotFoundError` — if model file does not exist
+**Исключения:**
+- `FileNotFoundError` — файл модели не найден
 
 ---
 
 ## resolver
 
-Module for dependency resolution and build graph construction.
+Модуль для разрешения зависимостей и построения графа сборки.
 
-### Classes
+### Классы
 
 #### `DependencyNode`
 
-Node in the dependency graph.
+Узел в графе зависимостей.
 
 ```python
 @dataclass
@@ -389,7 +389,7 @@ class DependencyNode:
 
 #### `KojiClient`
 
-Client for interacting with Koji.
+Клиент для взаимодействия с Koji.
 
 ```python
 class KojiClient:
@@ -402,29 +402,29 @@ class KojiClient:
     ): ...
 ```
 
-**Methods:**
+**Методы:**
 
 ##### `list_packages(tag: str) -> list[str]`
 
-List of all packages in tag.
+Список всех пакетов в теге.
 
 ##### `list_tagged_builds(tag: str) -> dict[str, str]`
 
-List of all builds in tag. Returns `{package_name: nvr}`.
+Список всех сборок в теге. Возвращает `{имя_пакета: nvr}`.
 
 ##### `package_exists(package: str, tag: str) -> bool`
 
-Checks if package exists in tag.
+Проверяет, существует ли пакет в теге.
 
 ##### `search_package(pattern: str) -> list[str]`
 
-Search packages by pattern.
+Поиск пакетов по паттерну.
 
 ---
 
 #### `DependencyResolver`
 
-Resolves dependencies and builds build graph.
+Разрешает зависимости и строит граф сборки.
 
 ```python
 class DependencyResolver:
@@ -436,84 +436,84 @@ class DependencyResolver:
     ): ...
 ```
 
-**Parameters:**
-- `koji_client` — Koji client instance (default: creates new)
-- `koji_tag` — Koji build tag to check packages against
-- `name_resolver` — optional `PackageNameResolver` for normalizing dependency names before Koji lookup
+**Параметры:**
+- `koji_client` — экземпляр клиента Koji (по умолчанию: создаётся новый)
+- `koji_tag` — тег сборки Koji для проверки пакетов
+- `name_resolver` — опциональный `PackageNameResolver` для нормализации имён зависимостей перед поиском в Koji
 
-**Methods:**
+**Методы:**
 
 ##### `find_missing_deps(deps: list[str | BuildRequirement], check_provides: bool = True) -> list[str]`
 
-Finds dependencies missing in Koji.
+Находит зависимости, отсутствующие в Koji.
 
-**Parameters:**
-- `deps` — list of dependencies
-- `check_provides` — whether to check provides
+**Параметры:**
+- `deps` — список зависимостей
+- `check_provides` — проверять ли provides
 
-**Returns:**
-- List of missing packages
+**Возвращает:**
+- Список недостающих пакетов
 
-**Example:**
+**Пример:**
 ```python
 resolver = DependencyResolver(koji_tag="fedora-build")
 missing = resolver.find_missing_deps(["python3-devel", "my-custom-lib"])
-print(f"Missing: {missing}")
+print(f"Отсутствуют: {missing}")
 ```
 
 ---
 
 ##### `build_dependency_graph(root_package: str, srpm_path: str, srpm_resolver: Optional[callable] = None) -> dict[str, DependencyNode]`
 
-Builds complete dependency graph.
+Строит полный граф зависимостей.
 
-**Parameters:**
-- `root_package` — root package name
-- `srpm_path` — path to root package SRPM
-- `srpm_resolver` — function to get SRPM by package name
+**Параметры:**
+- `root_package` — имя корневого пакета
+- `srpm_path` — путь к SRPM корневого пакета
+- `srpm_resolver` — функция для получения SRPM по имени пакета
 
-**Returns:**
-- Dictionary `{package_name: DependencyNode}`
+**Возвращает:**
+- Словарь `{имя_пакета: DependencyNode}`
 
 ---
 
 ##### `topological_sort() -> list[str]`
 
-Returns packages in build order (dependencies first).
+Возвращает пакеты в порядке сборки (зависимости первыми).
 
-**Exceptions:**
-- `CircularDependencyError` — circular dependency detected
+**Исключения:**
+- `CircularDependencyError` — обнаружена циклическая зависимость
 
 ---
 
 ##### `get_build_chain() -> list[list[str]]`
 
-Groups packages by levels (for parallel building).
+Группирует пакеты по уровням (для параллельной сборки).
 
-**Returns:**
-- List of lists. Packages in the same list can be built in parallel.
+**Возвращает:**
+- Список списков. Пакеты в одном списке могут собираться параллельно.
 
-**Example:**
+**Пример:**
 ```python
 chain = resolver.get_build_chain()
 for level, packages in enumerate(chain):
-    print(f"Level {level}: {packages}")
-# Level 0: ['lib-base', 'lib-core']
-# Level 1: ['lib-foo', 'lib-bar']
-# Level 2: ['my-app']
+    print(f"Уровень {level}: {packages}")
+# Уровень 0: ['lib-base', 'lib-core']
+# Уровень 1: ['lib-foo', 'lib-bar']
+# Уровень 2: ['my-app']
 ```
 
 ---
 
 ## fetcher
 
-Module for downloading SRPMs from external sources.
+Модуль для скачивания SRPM из внешних источников.
 
-### Classes
+### Классы
 
 #### `SRPMSource`
 
-SRPM source configuration.
+Конфигурация источника SRPM.
 
 ```python
 @dataclass
@@ -528,7 +528,7 @@ class SRPMSource:
 
 #### `SRPMFetcher`
 
-SRPM downloader.
+Загрузчик SRPM.
 
 ```python
 class SRPMFetcher:
@@ -542,71 +542,71 @@ class SRPMFetcher:
     ): ...
 ```
 
-**Parameters:**
-- `download_dir` — directory for downloaded SRPMs
-- `sources` — list of SRPM sources
-- `fedora_release` — Fedora release version
-- `no_ssl_verify` — disable SSL verification
-- `name_resolver` — optional `PackageNameResolver` for SRPM name mapping (e.g. `python3-requests` -> `python-requests`)
+**Параметры:**
+- `download_dir` — каталог для скачанных SRPM
+- `sources` — список источников SRPM
+- `fedora_release` — версия релиза Fedora
+- `no_ssl_verify` — отключить проверку SSL
+- `name_resolver` — опциональный `PackageNameResolver` для маппинга имён SRPM (например, `python3-requests` -> `python-requests`)
 
-**Methods:**
+**Методы:**
 
 ##### `download_srpm(package_name: str, version: Optional[str] = None) -> str`
 
-Downloads SRPM for package.
+Скачивает SRPM для пакета.
 
-**Parameters:**
-- `package_name` — package name
-- `version` — version (optional)
+**Параметры:**
+- `package_name` — имя пакета
+- `version` — версия (опционально)
 
-**Returns:**
-- Path to downloaded SRPM
+**Возвращает:**
+- Путь к скачанному SRPM
 
-**Exceptions:**
-- `SRPMNotFoundError` — SRPM not found in any source
+**Исключения:**
+- `SRPMNotFoundError` — SRPM не найден ни в одном источнике
 
-**Example:**
+**Пример:**
 ```python
 fetcher = SRPMFetcher(download_dir="/tmp/srpms")
 srpm_path = fetcher.download_srpm("python-requests")
-print(f"Downloaded: {srpm_path}")
+print(f"Скачан: {srpm_path}")
 ```
 
 ---
 
 ##### `search_fedora_src(name: str) -> list[str]`
 
-Search packages in Fedora.
+Поиск пакетов в Fedora.
 
-**Parameters:**
-- `name` — name or pattern
+**Параметры:**
+- `name` — имя или паттерн
 
-**Returns:**
-- List of package names
+**Возвращает:**
+- Список имён пакетов
 
 ---
 
 ##### `get_package_versions(package_name: str) -> list[str]`
 
-Gets available package versions.
+Получает доступные версии пакета.
 
 ---
 
 ##### `clear_cache() -> None`
 
-Clears downloaded SRPM cache.
+Очищает кэш скачанных SRPM.
 
 ##### `cleanup() -> None`
 
-Removes all downloaded files.
+Удаляет все скачанные файлы.
 
 ---
 
 ## builder
 
-Module for build orchestration in Koji.
+Модуль для оркестрации сборки в Koji.
 
-### Enumerations
+### Перечисления
 
 #### `BuildStatus`
 
@@ -619,11 +619,11 @@ class BuildStatus(Enum):
     CANCELED = "canceled"
 ```
 
-### Classes
+### Классы
 
 #### `BuildTask`
 
-Build task information.
+Информация о задаче сборки.
 
 ```python
 @dataclass
@@ -641,7 +641,7 @@ class BuildTask:
 
 #### `BuildResult`
 
-Build operation result.
+Результат операции сборки.
 
 ```python
 @dataclass
@@ -657,7 +657,7 @@ class BuildResult:
 
 #### `KojiBuilder`
 
-Build orchestrator.
+Оркестратор сборки.
 
 ```python
 class KojiBuilder:
@@ -679,41 +679,41 @@ class KojiBuilder:
     ): ...
 ```
 
-**Parameters:**
-- `no_name_resolution` — disable all package name normalization (macros, virtual provides, ML)
-- `no_ml` — disable only ML-based resolution (keep rule-based)
-- `ml_model_path` — custom path to ML model file (default: built-in `vibebuild/data/model.joblib`)
+**Параметры:**
+- `no_name_resolution` — отключить всю нормализацию имён пакетов (макросы, виртуальные provides, ML)
+- `no_ml` — отключить только ML-разрешение (оставить правила)
+- `ml_model_path` — путь к файлу ML-модели (по умолчанию: встроенный `vibebuild/data/model.joblib`)
 
-**Methods:**
+**Методы:**
 
 ##### `build_package(srpm_path: str, wait: bool = True) -> BuildTask`
 
-Submits package for building.
+Отправляет пакет на сборку.
 
-**Parameters:**
-- `srpm_path` — path to SRPM
-- `wait` — wait for completion
+**Параметры:**
+- `srpm_path` — путь к SRPM
+- `wait` — ожидать завершения
 
-**Returns:**
-- `BuildTask` with build information
+**Возвращает:**
+- `BuildTask` с информацией о сборке
 
-**Exceptions:**
-- `FileNotFoundError` — SRPM not found
-- `KojiBuildError` — build error
+**Исключения:**
+- `FileNotFoundError` — SRPM не найден
+- `KojiBuildError` — ошибка сборки
 
 ---
 
 ##### `build_with_deps(srpm_path: str) -> BuildResult`
 
-**Main VibeBuild function.** Builds package with automatic dependency resolution.
+**Основная функция VibeBuild.** Собирает пакет с автоматическим разрешением зависимостей.
 
-**Parameters:**
-- `srpm_path` — path to SRPM
+**Параметры:**
+- `srpm_path` — путь к SRPM
 
-**Returns:**
-- `BuildResult` with complete information
+**Возвращает:**
+- `BuildResult` с полной информацией
 
-**Example:**
+**Пример:**
 ```python
 builder = KojiBuilder(
     koji_server="https://koji.example.com/kojihub",
@@ -723,62 +723,62 @@ builder = KojiBuilder(
 result = builder.build_with_deps("my-package-1.0-1.src.rpm")
 
 if result.success:
-    print(f"Built {len(result.built_packages)} packages")
+    print(f"Собрано {len(result.built_packages)} пакетов")
 else:
-    print(f"Failed: {result.failed_packages}")
+    print(f"Ошибка: {result.failed_packages}")
 ```
 
 ---
 
 ##### `wait_for_repo(tag: Optional[str] = None, timeout: int = 1800) -> bool`
 
-Waits for repository regeneration.
+Ожидает регенерации репозитория.
 
-**Parameters:**
-- `tag` — tag (defaults to build_tag)
-- `timeout` — timeout in seconds
+**Параметры:**
+- `tag` — тег (по умолчанию build_tag)
+- `timeout` — таймаут в секундах
 
-**Returns:**
-- `True` if repository is updated
+**Возвращает:**
+- `True`, если репозиторий обновлён
 
 ---
 
 ##### `build_chain(packages: list[tuple[str, str]]) -> BuildResult`
 
-Builds multiple packages in order.
+Собирает несколько пакетов по порядку.
 
-**Parameters:**
-- `packages` — list of `(package_name, srpm_path)`
+**Параметры:**
+- `packages` — список `(имя_пакета, путь_к_srpm)`
 
 ---
 
 ##### `get_build_status(task_id: int) -> BuildStatus`
 
-Gets build task status.
+Получает статус задачи сборки.
 
 ##### `cancel_build(task_id: int) -> bool`
 
-Cancels build.
+Отменяет сборку.
 
 ---
 
 ## exceptions
 
-### Exception Hierarchy
+### Иерархия исключений
 
 ```python
-VibeBuildError                    # Base exception
-├── InvalidSRPMError              # Invalid SRPM
-├── SpecParseError                # Spec parsing error
-├── DependencyResolutionError     # Dependency resolution error
-│   └── CircularDependencyError   # Circular dependency
-├── SRPMNotFoundError             # SRPM not found
-├── KojiBuildError                # Build error
-├── KojiConnectionError           # Koji connection error
-└── NameResolutionError           # Package name resolution error
+VibeBuildError                    # Базовое исключение
+├── InvalidSRPMError              # Некорректный SRPM
+├── SpecParseError                # Ошибка парсинга spec
+├── DependencyResolutionError     # Ошибка разрешения зависимостей
+│   └── CircularDependencyError   # Циклическая зависимость
+├── SRPMNotFoundError             # SRPM не найден
+├── KojiBuildError                # Ошибка сборки
+├── KojiConnectionError           # Ошибка подключения к Koji
+└── NameResolutionError           # Ошибка разрешения имени пакета
 ```
 
-### Usage
+### Использование
 
 ```python
 from vibebuild.exceptions import (
@@ -791,9 +791,9 @@ from vibebuild.exceptions import (
 try:
     result = builder.build_with_deps("package.src.rpm")
 except CircularDependencyError as e:
-    print(f"Circular dependency: {e}")
+    print(f"Циклическая зависимость: {e}")
 except NameResolutionError as e:
-    print(f"Name resolution failed: {e}")
+    print(f"Ошибка разрешения имени: {e}")
 except VibeBuildError as e:
-    print(f"Build error: {e}")
+    print(f"Ошибка сборки: {e}")
 ```

@@ -1,143 +1,143 @@
-# Testing Guide
+# Руководство по тестированию
 
-Guide for testing VibeBuild.
+Руководство по тестированию VibeBuild.
 
-## Table of Contents
+## Содержание
 
-- [Running Tests](#running-tests)
-- [Test Structure](#test-structure)
-- [Writing Tests](#writing-tests)
-- [Mocking](#mocking)
-- [Coverage](#coverage)
+- [Запуск тестов](#запуск-тестов)
+- [Структура тестов](#структура-тестов)
+- [Написание тестов](#написание-тестов)
+- [Мокирование](#мокирование)
+- [Покрытие кода](#покрытие-кода)
 
 ---
 
-## Running Tests
+## Запуск тестов
 
-### Installing Dependencies
+### Установка зависимостей
 
 ```bash
 pip install -e ".[dev]"
 ```
 
-### Running All Tests
+### Запуск всех тестов
 
 ```bash
 pytest
 ```
 
-### Running with Verbose Output
+### Запуск с подробным выводом
 
 ```bash
 pytest -v
 ```
 
-### Running Specific File
+### Запуск конкретного файла
 
 ```bash
 pytest tests/test_analyzer.py
 ```
 
-### Running Specific Test
+### Запуск конкретного теста
 
 ```bash
 pytest tests/test_analyzer.py::test_get_build_requires
 ```
 
-### Running Name Resolution Tests
+### Тесты разрешения имён
 
 ```bash
-# All name resolver tests (49 tests)
+# Все тесты name resolver (49 тестов)
 pytest tests/test_name_resolver.py -v
 
-# All ML resolver tests (26 tests, requires scikit-learn)
+# Все тесты ML resolver (26 тестов, требуется scikit-learn)
 pytest tests/test_ml_resolver.py -v
 
-# Both together
+# Оба вместе
 pytest tests/test_name_resolver.py tests/test_ml_resolver.py -v
 ```
 
-### Running by Marker
+### Запуск по маркерам
 
 ```bash
-# Only unit tests
+# Только юнит-тесты
 pytest -m unit
 
-# Only integration tests
+# Только интеграционные тесты
 pytest -m integration
 ```
 
-### Manual / E2E verification (optional)
+### Ручная / E2E-проверка (опционально)
 
-With `koji` CLI and network access to Fedora Koji you can verify the full flow:
+С `koji` CLI и доступом к Fedora Koji можно проверить полный цикл:
 
 ```bash
 vibebuild --version
 vibebuild --help
 vibebuild --download-only python-requests
-vibebuild --dry-run fedora-43 python-requests   # package name: download then show build plan
+vibebuild --dry-run fedora-43 python-requests   # имя пакета: скачать, показать план сборки
 ```
 
-For a full public-demo script (one-command build by package name, analyze, dry-run, build), see [DEMO.md](../DEMO.md).
+Полный сценарий демонстрации (сборка одной командой по имени, анализ, dry-run, сборка) — см. [DEMO.md](../DEMO.md).
 
 ---
 
-## Test Structure
+## Структура тестов
 
 ```
 tests/
-├── conftest.py              # Shared fixtures
-├── fixtures/                # Test data
+├── conftest.py              # Общие фикстуры
+├── fixtures/                # Тестовые данные
 │   ├── test-package.spec
 │   └── test-package.src.rpm
-├── test_analyzer.py         # Analyzer tests
-├── test_resolver.py         # Resolver tests
-├── test_fetcher.py          # Fetcher tests
-├── test_builder.py          # Builder tests
-├── test_cli.py              # CLI tests
-├── test_name_resolver.py    # Name resolver tests (49 tests, 9 classes)
-├── test_ml_resolver.py      # ML resolver tests (26 tests, 7 classes)
-└── integration/             # Integration tests
+├── test_analyzer.py         # Тесты анализатора
+├── test_resolver.py         # Тесты резолвера
+├── test_fetcher.py          # Тесты загрузчика
+├── test_builder.py          # Тесты сборщика
+├── test_cli.py              # Тесты CLI
+├── test_name_resolver.py    # Тесты резолвера имён (49 тестов, 9 классов)
+├── test_ml_resolver.py      # Тесты ML-резолвера (26 тестов, 7 классов)
+└── integration/             # Интеграционные тесты
     └── test_e2e.py
 ```
 
-### test_name_resolver.py (49 tests)
+### test_name_resolver.py (49 тестов)
 
-Tests for rule-based `PackageNameResolver`:
+Тесты для `PackageNameResolver` на основе правил:
 
-| Test Class | Count | What's tested |
+| Класс | Кол-во | Что тестируется |
 |---|---|---|
-| `TestPackageNameResolverVirtualProvides` | 11 | All 9 provide patterns (python3dist, pkgconfig, perl, rubygem, npm, golang, tex, mvn, cmake) plus edge cases |
-| `TestPackageNameResolverMacros` | 6 | Macro expansion: `%{python3_pkgversion}`, conditional `%{?...}`, unknown macros, multiple macros |
-| `TestPackageNameResolverPlainNames` | 3 | Passthrough for plain names like `gcc`, empty strings |
-| `TestPackageNameResolverSRPMNames` | 9 | SRPM name mapping: python3-X, python2-X, -devel, -libs, perl-, rubygem-, nodejs-, golang- |
-| `TestPackageNameResolverCaching` | 3 | In-memory cache behavior |
-| `TestPackageNameResolverMLFallback` | 7 | ML integration: called for unresolved provides, not called when rules match, exception handling, graceful degradation |
-| `TestSystemMacros` | 5 | Validate SYSTEM_MACROS entries |
-| `TestProvidePatterns` | 2 | Validate PROVIDE_PATTERNS structure |
-| `TestResolveVirtualProvide` | 3 | Direct `resolve_virtual_provide()` method |
+| `TestPackageNameResolverVirtualProvides` | 11 | Все 9 паттернов provides (python3dist, pkgconfig, perl, rubygem, npm, golang, tex, mvn, cmake) + крайние случаи |
+| `TestPackageNameResolverMacros` | 6 | Раскрытие макросов: `%{python3_pkgversion}`, условные `%{?...}`, неизвестные макросы, множественные макросы |
+| `TestPackageNameResolverPlainNames` | 3 | Прямая передача простых имён типа `gcc`, пустые строки |
+| `TestPackageNameResolverSRPMNames` | 9 | Маппинг имён SRPM: python3-X, python2-X, -devel, -libs, perl-, rubygem-, nodejs-, golang- |
+| `TestPackageNameResolverCaching` | 3 | Поведение кэша в памяти |
+| `TestPackageNameResolverMLFallback` | 7 | Интеграция с ML: вызов для неразрешённых provides, пропуск при совпадении правил, обработка ошибок, плавная деградация |
+| `TestSystemMacros` | 5 | Проверка записей SYSTEM_MACROS |
+| `TestProvidePatterns` | 2 | Проверка структуры PROVIDE_PATTERNS |
+| `TestResolveVirtualProvide` | 3 | Прямой вызов `resolve_virtual_provide()` |
 
-### test_ml_resolver.py (26 tests)
+### test_ml_resolver.py (26 тестов)
 
-Tests for ML-based `MLPackageResolver`:
+Тесты для ML-резолвера `MLPackageResolver`:
 
-| Test Class | Count | What's tested |
+| Класс | Кол-во | Что тестируется |
 |---|---|---|
-| `TestMLPackageResolverInstantiation` | 2 | Constructor with/without model path |
-| `TestMLPackageResolverTrain` | 3 | Training on sample data, empty data error, vocabulary check |
-| `TestMLPackageResolverPredict` | 6 | Exact matches (python3dist, pkgconfig, perl), garbage input returns None, unavailable model |
-| `TestMLPackageResolverSaveLoad` | 5 | Save/load roundtrip, directory creation, error handling |
-| `TestMLPackageResolverIsAvailable` | 3 | Availability after training, without model, after load |
-| `TestMLPackageResolverCache` | 5 | Prediction caching, disk persistence, corrupt file handling |
-| `TestMLPackageResolverWithoutSklearn` | 2 | Mocked `HAS_SKLEARN=False`: train error, availability check |
+| `TestMLPackageResolverInstantiation` | 2 | Конструктор с/без пути к модели |
+| `TestMLPackageResolverTrain` | 3 | Обучение на примерных данных, ошибка при пустых данных, проверка словаря |
+| `TestMLPackageResolverPredict` | 6 | Точные совпадения (python3dist, pkgconfig, perl), мусорный ввод возвращает None, недоступная модель |
+| `TestMLPackageResolverSaveLoad` | 5 | Цикл сохранения/загрузки, создание каталога, обработка ошибок |
+| `TestMLPackageResolverIsAvailable` | 3 | Доступность после обучения, без модели, после загрузки |
+| `TestMLPackageResolverCache` | 5 | Кэширование предсказаний, сохранение на диск, обработка повреждённого файла |
+| `TestMLPackageResolverWithoutSklearn` | 2 | Мок `HAS_SKLEARN=False`: ошибка обучения, проверка доступности |
 
 ---
 
-## Writing Tests
+## Написание тестов
 
-### Style
+### Стиль
 
-Use AAA (Arrange-Act-Assert) pattern:
+Используйте паттерн AAA (Arrange-Act-Assert):
 
 ```python
 def test_get_build_requires_extracts_packages():
@@ -149,16 +149,16 @@ def test_get_build_requires_extracts_packages():
     assert "python3-devel" in result
 ```
 
-### Naming Convention
+### Соглашение по именованию
 
 ```python
-def test_<what>_<condition>_<expected>():
+def test_<что>_<условие>_<ожидаемый_результат>():
     # test_get_build_requires_with_valid_srpm_returns_list
     # test_analyze_spec_with_missing_name_raises_error
     pass
 ```
 
-### Markers
+### Маркеры
 
 ```python
 import pytest
@@ -178,7 +178,7 @@ def test_slow_example():
 
 ---
 
-## Fixtures
+## Фикстуры
 
 ### conftest.py
 
@@ -200,14 +200,14 @@ def sample_srpm(fixtures_dir):
 
 @pytest.fixture
 def mock_koji_client(mocker):
-    """Mock KojiClient for tests without real Koji."""
+    """Мок KojiClient для тестов без реального Koji."""
     client = mocker.Mock()
     client.list_packages.return_value = ["python3", "gcc", "make"]
     client.package_exists.return_value = True
     return client
 ```
 
-### Using Fixtures
+### Использование фикстур
 
 ```python
 def test_analyzer_with_fixture(sample_spec):
@@ -220,9 +220,9 @@ def test_analyzer_with_fixture(sample_spec):
 
 ---
 
-## Mocking
+## Мокирование
 
-### Mock subprocess
+### Мок subprocess
 
 ```python
 def test_koji_build_command(mocker):
@@ -237,7 +237,7 @@ def test_koji_build_command(mocker):
     mock_run.assert_called_once()
 ```
 
-### Mock requests
+### Мок requests
 
 ```python
 def test_download_srpm_from_koji(mocker):
@@ -245,14 +245,14 @@ def test_download_srpm_from_koji(mocker):
 
     fetcher = SRPMFetcher(download_dir="/tmp/test")
 
-    # ... test logic
+    # ... логика теста
 ```
 
-### Mock ML resolver
+### Мок ML-резолвера
 
 ```python
 def test_resolve_with_ml_fallback(mocker):
-    """Test that ML resolver is called for unresolved virtual provides."""
+    """Тест: ML-резолвер вызывается для неразрешённых виртуальных provides."""
     mock_ml = mocker.Mock()
     mock_ml.predict.return_value = "custom-package"
 
@@ -264,7 +264,7 @@ def test_resolve_with_ml_fallback(mocker):
 
 
 def test_resolve_ml_not_called_when_rules_match(mocker):
-    """Test that ML is skipped when rule-based resolution succeeds."""
+    """Тест: ML пропускается, когда правила успешно разрешают имя."""
     mock_ml = mocker.Mock()
 
     resolver = PackageNameResolver(ml_resolver=mock_ml)
@@ -274,7 +274,7 @@ def test_resolve_ml_not_called_when_rules_match(mocker):
     assert result == "python3-requests"
 ```
 
-### Mock filesystem
+### Мок файловой системы
 
 ```python
 def test_analyze_spec_file_not_found(tmp_path):
@@ -286,7 +286,7 @@ def test_analyze_spec_file_not_found(tmp_path):
 
 ---
 
-## Test Examples
+## Примеры тестов
 
 ### test_analyzer.py
 
@@ -378,28 +378,28 @@ class TestDependencyResolver:
 
 ---
 
-## Coverage
+## Покрытие кода
 
-### Running with Coverage
+### Запуск с покрытием
 
 ```bash
 pytest --cov=vibebuild --cov-report=term-missing
 ```
 
-### HTML Report
+### HTML-отчёт
 
 ```bash
 pytest --cov=vibebuild --cov-report=html
 open htmlcov/index.html
 ```
 
-### Minimum Coverage
+### Минимальное покрытие
 
 ```bash
 pytest --cov=vibebuild --cov-fail-under=80
 ```
 
-### Configuration in pyproject.toml
+### Конфигурация в pyproject.toml
 
 ```toml
 [tool.coverage.run]
@@ -456,15 +456,15 @@ jobs:
 
 ---
 
-## Integration Tests
+## Интеграционные тесты
 
-### Requirements
+### Требования
 
-Integration tests require:
-- Access to test Koji server
-- Test SRPM files
+Интеграционные тесты требуют:
+- Доступ к тестовому серверу Koji
+- Тестовые SRPM-файлы
 
-### Example
+### Пример
 
 ```python
 # tests/integration/test_e2e.py
@@ -483,7 +483,7 @@ class TestEndToEnd:
 
         builder = KojiBuilder(
             koji_server=koji_server,
-            scratch=True,  # Scratch build for tests
+            scratch=True,  # Scratch-сборка для тестов
         )
 
         result = builder.build_with_deps(str(sample_srpm))
@@ -491,15 +491,15 @@ class TestEndToEnd:
         assert result.success
 ```
 
-### Running Integration Tests
+### Запуск интеграционных тестов
 
 ```bash
-# Only unit tests (default)
+# Только юнит-тесты (по умолчанию)
 pytest -m "not integration"
 
-# Including integration tests
+# Включая интеграционные тесты
 pytest -m "integration"
 
-# All tests
+# Все тесты
 pytest
 ```
